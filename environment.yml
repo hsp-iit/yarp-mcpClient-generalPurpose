@@ -1,0 +1,11 @@
+name: yarp-mcp-client
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    - httpx>=0.28.1
+    - mcp[cli]>=1.15.0
+    - openai>=1.109.1

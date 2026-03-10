@@ -1,0 +1,78 @@
+<application>
+    <name>Test_MCP_CLIENT_chat_sim</name>
+    <dependencies>
+    </dependencies>
+
+    <!-- Applications -->
+    <application>
+        <name>Navigation_ROS2_R1Mk3_SIM</name>
+        <prefix></prefix>
+    </application>
+
+    <!-- Modules -->
+
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context vadModule --from audioPlayer.ini</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context speechPipeline --from azureSynthesizer.ini</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>yarpview</name>
+        <parameters>--name /robot/faceDisplay/image:i</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>faceExpressionImage5GTour</name>
+        <parameters></parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--from mcpFakeBattery.ini</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>uv_run.sh</name>
+        <parameters>yarp_server_launcher.py --context test_servers --from test_batteryNnavigationNSynth.ini</parameters>
+        <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers-devices</workdir>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>terminator</name>
+        <parameters>-e "yarp-mcpClient-generalPurpose.py"</parameters>
+        <workdir>$ENV{ROBOT_CODE}/yarp-mcpClient-generalPurpose</workdir>
+        <node>console</node>
+    </module>
+
+    <!-- Connections -->
+
+    <connection>
+        <from>/faceExpressionImage/image:o</from>
+        <to>/robot/faceDisplay/image:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/audioPlayerWrapper/status:o</from>
+        <to>/faceExpressionImage/mouthAudioData:i </to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/speechSynthesizer_nws/sound:o</from>
+        <to>/audioPlayerWrapper/audio:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+</application>
