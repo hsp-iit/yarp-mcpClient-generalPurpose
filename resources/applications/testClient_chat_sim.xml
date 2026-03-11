@@ -44,7 +44,7 @@
     <module>
         <name>uv_run.sh</name>
         <parameters>yarp_server_launcher.py --context test_servers --from test_batteryNnavigationNSynth.ini</parameters>
-        <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers-devices</workdir>
+        <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers</workdir>
         <node>console</node>
     </module>
 
