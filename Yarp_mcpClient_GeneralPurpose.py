@@ -56,12 +56,12 @@ from typing import List, Dict, Any, Optional
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
-from modules.input_modes.input_mode_chat import ChatInputMode
-from modules.input_modes.input_mode_yarp import YarpInputMode
-from modules.input_modes.input_mode_ros2 import ROS2InputMode
-from modules.llm_backends.llm_backend_azure import AzureOpenAIBackend
-from modules.llm_backends.llm_backend_ollama import OllamaBackend
-from modules.core.Yarp_mcpClient_GeneralCore import Yarp_mcpClient_GeneralCore
+from src.input_modes.input_mode_chat import ChatInputMode
+from src.input_modes.input_mode_yarp import YarpInputMode
+from src.input_modes.input_mode_ros2 import ROS2InputMode
+from src.llm_backends.llm_backend_azure import AzureOpenAIBackend
+from src.llm_backends.llm_backend_ollama import OllamaBackend
+from src.core.Yarp_mcpClient_GeneralCore import Yarp_mcpClient_GeneralCore
 
 # Color codes for terminal output
 class Colors:
