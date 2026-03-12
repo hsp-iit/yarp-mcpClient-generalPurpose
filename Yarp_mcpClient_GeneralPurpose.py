@@ -132,6 +132,12 @@ Examples:
         help="Ollama model name (default: llama3.2)"
     )
 
+    parser.add_argument(
+        "--custom-prompt-file",
+        default=None,
+        help="Path to a text file containing a custom system prompt to replace the default R1 robot prompt"
+    )
+
     return parser.parse_args()
 
 
@@ -177,7 +183,7 @@ async def main():
         traceback.print_exc()
         return
 
-    client = Yarp_mcpClient_GeneralCore(input_mode=input_mode, llm_backend=llm_backend)
+    client = Yarp_mcpClient_GeneralCore(input_mode=input_mode, llm_backend=llm_backend, custom_prompt_file=args.custom_prompt_file)
     await client.run_loop()
 
 

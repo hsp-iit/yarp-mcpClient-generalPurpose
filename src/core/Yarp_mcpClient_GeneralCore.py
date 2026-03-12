@@ -32,9 +32,11 @@ class Colors:
 
 
 class Yarp_mcpClient_GeneralCore:
-    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend):
+    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend, custom_prompt_file: str = None):
         self.input_mode = input_mode
         self.llm_backend = llm_backend
+        self.custom_prompt_file = custom_prompt_file
+        self.custom_prompt_text = None
         self.conversation_history: List[Dict[str, Any]] = []
         self.mcp_urls: Dict[str, str] = {}  # Maps server name to MCP URL
         self.tool_descriptions_cache = {}
@@ -42,6 +44,10 @@ class Yarp_mcpClient_GeneralCore:
         self.system_prompt_addenda: Dict[str, str] = {}  # Maps server name to system prompt addendum
         self.available_tools = []
         self.system_prompt = ""  # Will be built dynamically after discovery
+
+        # Load custom prompt from file if provided
+        if self.custom_prompt_file:
+            self._load_custom_prompt()
 
         # Tool parameter definitions (hardcoded, does not change)
         self._tool_parameters = self._define_tool_parameters()
@@ -290,6 +296,22 @@ class Yarp_mcpClient_GeneralCore:
             traceback.print_exc()
             return {}
 
+    def _load_custom_prompt(self):
+        """Load custom prompt from file"""
+        try:
+            with open(self.custom_prompt_file, 'r', encoding='utf-8') as f:
+                self.custom_prompt_text = f.read().strip()
+                logger.info(f"Loaded custom prompt from {self.custom_prompt_file} ({len(self.custom_prompt_text)} chars)")
+                print(f"{Colors.OKGREEN}✅ Loaded custom prompt from {self.custom_prompt_file}{Colors.ENDC}")
+        except FileNotFoundError:
+            logger.error(f"Custom prompt file not found: {self.custom_prompt_file}")
+            print(f"{Colors.FAIL}❌ Custom prompt file not found: {self.custom_prompt_file}{Colors.ENDC}")
+            self.custom_prompt_text = None
+        except Exception as e:
+            logger.error(f"Error loading custom prompt file: {e}")
+            print(f"{Colors.FAIL}❌ Error loading custom prompt file: {e}{Colors.ENDC}")
+            self.custom_prompt_text = None
+
     def _define_tool_parameters(self) -> Dict[str, Dict]:
         """
         Define parameter information for known tools.
@@ -327,7 +349,11 @@ class Yarp_mcpClient_GeneralCore:
         if not self.tool_descriptions_cache:
             return "You are a helpful AI assistant with access to YARP capabilities through function calls."
 
-        prompt = """You are the robot R1 from the Italian Institute of Technology with access to YARP (Yet Another Robot Platform) capabilities through function calls.
+        # Use custom prompt if provided, otherwise use default R1 prompt
+        if self.custom_prompt_text:
+            prompt = self.custom_prompt_text + "\n\nYou can help users with general questions and conversations, and you also have the ability to:\n\n"
+        else:
+            prompt = """You are the robot R1 from the Italian Institute of Technology with access to YARP (Yet Another Robot Platform) capabilities through function calls.
 
 IMPORTANT: You have access to actual function calling capabilities. When you need to use YARP tools, use the provided function calls - do NOT generate fake JSON objects or mock responses in your text. Only describe what you're doing and what the actual results were.
 
