@@ -1,5 +1,5 @@
 <application>
-  <name>Speech_Pipeline_MCP_sim</name>
+  <name>Speech_Pipeline_MCP_sim_google</name>
 
   <dependencies>
   </dependencies>
@@ -60,13 +60,13 @@
   <!-- speech synthesizer -->
   <module>
       <name>yarprobotinterface</name>
-      <parameters>--context speechPipeline --from azureSynthesizer.ini</parameters>
+      <parameters>--context google --from googleSynthesizer.ini</parameters>
       <node>console</node>
   </module>
 
   <module>
       <name>yarprobotinterface</name>
-      <parameters>--context speechPipeline --from azureTranscription_tr.ini</parameters>
+      <parameters>--context google --from googleTranscription.ini</parameters>
       <node>console</node>
   </module>
 

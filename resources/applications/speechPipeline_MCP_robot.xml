@@ -33,6 +33,12 @@
   </module>
 
   <module>
+    <name>speechMicController</name>
+    <parameters></parameters>
+    <node>r1-torso</node>
+  </module>
+
+  <module>
     <name>yarprobotinterface </name>
     <parameters>--context headSynchronizer --from faceDisplay.ini</parameters>
     <node>r1-face</node>
@@ -60,7 +66,7 @@
 
   <module>
       <name>yarprobotinterface</name>
-      <parameters>--context speechPipeline --from azureNorwayTranscription.ini</parameters>
+      <parameters>--context speechPipeline --from azureTranscription_tr.ini</parameters>
       <node>console</node>
   </module>
 

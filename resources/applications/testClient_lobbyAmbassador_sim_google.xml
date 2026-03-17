@@ -1,5 +1,5 @@
 <application>
-    <name>Test_MCP_CLIENT_LobbyAmbassador_sim</name>
+    <name>Test_MCP_CLIENT_LobbyAmbassador_sim_google</name>
     <dependencies>
     </dependencies>
 
@@ -10,7 +10,7 @@
     </application>
 
     <application>
-        <name>Speech_Pipeline_MCP_sim</name>
+        <name>Speech_Pipeline_MCP_sim_google</name>
         <prefix></prefix>
     </application>
 
