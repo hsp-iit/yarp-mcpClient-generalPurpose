@@ -145,6 +145,15 @@ class Yarp_mcpClient_GeneralCheckerCore:
             except Exception as e:
                 logger.warning(f"Could not send notification through input mode: {e}")
 
+        # Invoke the LLM to respond to the notification
+        # Let process_user_message add a user message to trigger LLM response
+        try:
+            response = await self.process_user_message("[A background monitoring task has completed. Please acknowledge and summarize the result for the user.]")
+            if response and response.strip():
+                await self.input_mode.send_response(response)
+        except Exception as e:
+            logger.error(f"Error generating response to task completion: {e}")
+
     async def discover_mcp_servers(self):
         """Discover available MCP servers and their tools using MCP client sessions"""
         self.tool_descriptions_cache = {}
@@ -807,6 +816,9 @@ When using tools:
 
     async def run_loop(self):
         """Main run loop - works with any input mode"""
+        # Set the main event loop for background task manager
+        self.task_manager.main_loop = asyncio.get_running_loop()
+
         # Initialize input mode
         await self.input_mode.initialize()
 

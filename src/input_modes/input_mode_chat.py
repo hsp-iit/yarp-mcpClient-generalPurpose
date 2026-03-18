@@ -1,5 +1,6 @@
 from .input_mode_base import InputMode
 from typing import Optional
+import asyncio
 
 class ChatInputMode(InputMode):
     """Interactive terminal chat input mode"""
@@ -22,7 +23,9 @@ class ChatInputMode(InputMode):
 
     async def get_input(self) -> Optional[str]:
         try:
-            user_input = input(f"\n\033[92mYou: \033[0m").strip()
+            # Run input() in a thread pool to avoid blocking the event loop
+            user_input = await asyncio.to_thread(input, f"\n\033[92mYou: \033[0m")
+            user_input = user_input.strip()
             if user_input.lower() in ['quit', 'exit', 'bye', 'q']:
                 return None
             return user_input if user_input else ""
