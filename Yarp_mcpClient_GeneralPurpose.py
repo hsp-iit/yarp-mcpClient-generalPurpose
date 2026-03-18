@@ -22,6 +22,7 @@ Usage:
   python mcp_yarpSwissArmyClient.py --mode chat --model remote
   python mcp_yarpSwissArmyClient.py --mode yarp --model local
   python mcp_yarpSwissArmyClient.py --mode ros2 --model remote
+  python mcp_yarpSwissArmyClient.py --mode chat --model remote --core checker
 
 Options:
   --mode {chat,yarp,ros2}    Input mode (default: chat)
@@ -32,6 +33,10 @@ Options:
   --model {local,remote}     LLM backend (default: remote)
                              remote: Azure OpenAI
                              local: Local Ollama instance
+
+  --core {standard,checker}  Client core type (default: standard)
+                             standard: Basic MCP client without background monitoring
+                             checker: Advanced client with background task monitoring
 
   --yarp-port PORT          YARP port name for yarp mode (default: /mcp_client/input:i)
   --ollama-url URL          Ollama API URL (default: http://localhost:11434)
@@ -62,6 +67,7 @@ from src.input_modes.input_mode_ros2 import ROS2InputMode
 from src.llm_backends.llm_backend_azure import AzureOpenAIBackend
 from src.llm_backends.llm_backend_ollama import OllamaBackend
 from src.core.Yarp_mcpClient_GeneralCore import Yarp_mcpClient_GeneralCore
+from src.core.Yarp_mcpClient_GeneralCheckerCore import Yarp_mcpClient_GeneralCheckerCore
 
 # Color codes for terminal output
 class Colors:
@@ -91,6 +97,12 @@ Examples:
 
   # ROS2 service with Azure OpenAI
   python mcp_yarpSwissArmyClient.py --mode ros2 --model remote
+
+  # Chat with background monitoring capabilities
+  python mcp_yarpSwissArmyClient.py --mode chat --model remote --core checker
+
+  # YARP input with monitoring
+  python mcp_yarpSwissArmyClient.py --mode yarp --model local --core checker
         """
     )
 
@@ -106,6 +118,13 @@ Examples:
         choices=["local", "remote"],
         default="remote",
         help="LLM backend: remote (Azure OpenAI) or local (Ollama)"
+    )
+
+    parser.add_argument(
+        "--core",
+        choices=["standard", "checker"],
+        default="standard",
+        help="Client core type: standard (basic MCP client) or checker (with background task monitoring)"
     )
 
     parser.add_argument(
@@ -147,6 +166,7 @@ async def main():
     print(f"{Colors.HEADER}Starting YARP MCP Swiss Army Client{Colors.ENDC}")
     print(f"  Mode: {args.mode}")
     print(f"  Model: {args.model}")
+    print(f"  Core: {args.core}")
     print()
 
     try:
@@ -183,7 +203,14 @@ async def main():
         traceback.print_exc()
         return
 
-    client = Yarp_mcpClient_GeneralCore(input_mode=input_mode, llm_backend=llm_backend, custom_prompt_file=args.custom_prompt_file)
+    # Select the appropriate client core based on user choice
+    if args.core == "checker":
+        client = Yarp_mcpClient_GeneralCheckerCore(input_mode=input_mode, llm_backend=llm_backend)
+        print(f"{Colors.OKBLUE}Using CheckerCore with background monitoring capabilities{Colors.ENDC}\n")
+    else:
+        client = Yarp_mcpClient_GeneralCore(input_mode=input_mode, llm_backend=llm_backend, custom_prompt_file=args.custom_prompt_file)
+        print(f"{Colors.OKBLUE}Using Standard Core{Colors.ENDC}\n")
+
     await client.run_loop()
 
 
