@@ -5,7 +5,7 @@
 
     <!-- Applications -->
     <application>
-        <name>Navigation_ROS2_R1Mk3_SIM</name>
+        <name>Navigation_ROS2_R1Mk3_SIM_light</name>
         <prefix></prefix>
     </application>
 
@@ -42,17 +42,10 @@
     </module>
 
     <module>
-        <name>uv_run.sh</name>
+        <name>python3</name>
         <parameters>yarp_server_launcher.py --context test_servers --from test_batteryNnavigationNSynth.ini</parameters>
         <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers</workdir>
-        <node>console</node>
-    </module>
-
-    <module>
-        <name>terminator</name>
-        <parameters>-e "yarp-mcpClient-generalPurpose.py"</parameters>
-        <workdir>$ENV{ROBOT_CODE}/yarp-mcpClient-generalPurpose</workdir>
-        <node>console</node>
+        <node>console-mcp</node>
     </module>
 
     <!-- Connections -->

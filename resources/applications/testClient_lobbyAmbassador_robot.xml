@@ -1,30 +1,24 @@
 <application>
-    <name>Test_MCP_CLIENT_LobbyAmbassador_sim</name>
+    <name>Test_MCP_CLIENT_LobbyAmbassador_robot</name>
     <dependencies>
     </dependencies>
 
     <!-- Applications -->
     <application>
-        <name>Navigation_ROS2_R1Mk3_SIM_light</name>
+        <name>Navigation_ROS2_R1SN003_cris_new_area_on_board</name>
         <prefix></prefix>
     </application>
 
     <application>
-        <name>Speech_Pipeline_MCP_sim</name>
+        <name>Speech_Pipeline_MCP_robot</name>
         <prefix></prefix>
     </application>
 
 
     <!-- Modules -->
     <module>
-        <name>yarprobotinterface</name>
-        <parameters>--from mcpFakeBattery.ini</parameters>
-        <node>console</node>
-    </module>
-
-    <module>
         <name>python3</name>
-        <parameters>yarp_server_launcher.py --context test_servers --from test_lobbyAmbassador.ini</parameters>
+        <parameters>yarp_server_launcher.py --context test_servers --from test_lobbyAmbassador_robot.ini</parameters>
         <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers</workdir>
         <node>console-mcp</node>
     </module>
