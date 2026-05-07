@@ -1,10 +1,13 @@
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
+from pydantic import RootModel
 import asyncio
 import logging
 import subprocess
+import threading
+from collections import defaultdict
 from ..llm_backends.llm_backend_base import LLMBackend
 from ..input_modes.input_mode_base import InputMode
 
@@ -18,6 +21,24 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+class _AnyServerNotification(RootModel[Any]):
+    """Accept any JSON-RPC notification so custom server methods can be dispatched.
+
+    The MCP Python SDK validates incoming notifications against the standard
+    ServerNotification union. That is correct for strict MCP primitives, but our
+    servers may also emit domain-specific notifications while they are being
+    migrated to the official task notification shape.
+    """
+
+
+class NotificationClientSession(ClientSession):
+    """ClientSession variant used only by the passive notification listener."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._receive_notification_type = _AnyServerNotification
+
 # Color codes for terminal output
 class Colors:
     HEADER = '\033[95m'
@@ -29,6 +50,182 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
+
+
+class NotificationDispatcher:
+    """Manages notification handlers and dispatches incoming notifications"""
+
+    def __init__(self):
+        # Maps notification method to list of handlers
+        # Format: "method_name" -> [callable, callable, ...]
+        self.handlers: Dict[str, List[Callable]] = defaultdict(list)
+        self.lock = asyncio.Lock()
+
+    def register_handler(self, notification_method: str, handler: Callable):
+        """Register a handler for a specific notification method
+
+        Args:
+            notification_method: The MCP notification method (e.g., "notifications/tasks/status")
+                                 or "*" to receive all notifications.
+            handler: Callable that takes (notification_method: str, params: dict) -> None
+        """
+        self.handlers[notification_method].append(handler)
+
+    async def dispatch(self, notification_method: str, params: Optional[Dict[str, Any]] = None):
+        """Dispatch a notification to all registered handlers
+
+        Args:
+            notification_method: The notification method name
+            params: Optional parameters from the notification
+        """
+        params = params or {}
+        async with self.lock:
+            handlers = [
+                *self.handlers.get(notification_method, []),
+                *self.handlers.get("*", []),
+            ]
+
+        for handler in handlers:
+            try:
+                result = handler(notification_method, params)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"Error in notification handler for {notification_method}: {e}")
+
+
+class NotificationListener:
+    """Maintains connections to MCP servers and listens for notifications"""
+
+    def __init__(self, dispatcher: NotificationDispatcher):
+        self.dispatcher = dispatcher
+        self.server_connections: Dict[str, Any] = {}  # server_url -> connection info
+        self.listener_tasks: Dict[str, asyncio.Task] = {}  # server_url -> task
+        self.is_running = False
+        self.lock = asyncio.Lock()
+
+    async def add_server(self, server_url: str, server_name: str):
+        """Add a server to listen for notifications
+
+        Args:
+            server_url: The MCP server URL
+            server_name: Human-readable server name
+        """
+        async with self.lock:
+            if server_url not in self.server_connections:
+                self.server_connections[server_url] = {"name": server_name, "active": False}
+                if self.is_running:
+                    # Start listening to this server immediately if listener is already running
+                    task = asyncio.create_task(self._listen_to_server(server_url))
+                    self.listener_tasks[server_url] = task
+
+    async def start(self):
+        """Start listening to all registered servers for notifications"""
+        async with self.lock:
+            self.is_running = True
+            for server_url in self.server_connections.keys():
+                if server_url not in self.listener_tasks:
+                    task = asyncio.create_task(self._listen_to_server(server_url))
+                    self.listener_tasks[server_url] = task
+
+    async def stop(self):
+        """Stop all notification listeners"""
+        async with self.lock:
+            self.is_running = False
+            tasks = list(self.listener_tasks.values())
+            for task in tasks:
+                task.cancel()
+            self.listener_tasks.clear()
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _handle_session_message(self, server_url: str, server_name: str, message: Any):
+        """Extract and dispatch notifications delivered by ClientSession."""
+        if isinstance(message, Exception):
+            logger.debug(f"Notification listener received exception from {server_name}: {message}")
+            return
+
+        notification = getattr(message, "root", None)
+        if notification is None:
+            return
+
+        if isinstance(notification, dict):
+            method = notification.get("method")
+            params = notification.get("params") or {}
+        else:
+            method = getattr(notification, "method", None)
+            params = getattr(notification, "params", {}) or {}
+
+        if not method:
+            return
+
+        if hasattr(params, "model_dump"):
+            params = params.model_dump(by_alias=True, mode="json", exclude_none=True)
+        elif not isinstance(params, dict):
+            params = {"value": params}
+
+        params = dict(params)
+        params.setdefault("_server_url", server_url)
+        params.setdefault("_server_name", server_name)
+
+        await self.dispatcher.dispatch(method, params)
+
+    async def _subscribe_to_server_notifications(self, session: ClientSession, server_name: str):
+        """Ask servers that support it to broadcast task notifications to this session."""
+        try:
+            result = await session.call_tool("subscribe_notifications", {})
+            if getattr(result, "isError", False):
+                logger.debug(f"{server_name} rejected subscribe_notifications")
+                return
+            logger.info(f"Subscribed to server-side notifications from {server_name}")
+        except Exception as e:
+            logger.debug(f"{server_name} does not expose subscribe_notifications: {e}")
+
+    async def _listen_to_server(self, server_url: str):
+        """Listen for notifications from a specific server
+
+        Args:
+            server_url: The MCP server URL to listen to
+        """
+        server_name = self.server_connections[server_url]["name"]
+        logger.info(f"Starting notification listener for {server_name} at {server_url}")
+
+        while self.is_running:
+            try:
+                async def message_handler(message: Any):
+                    await self._handle_session_message(server_url, server_name, message)
+
+                async with streamablehttp_client(server_url) as (read_stream, write_stream, get_session_id):
+                    async with NotificationClientSession(
+                        read_stream,
+                        write_stream,
+                        message_handler=message_handler,
+                    ) as session:
+                        await session.initialize()
+
+                        # Update connection status
+                        self.server_connections[server_url]["active"] = True
+                        logger.info(f"Connected to {server_name} notification stream")
+                        await self._subscribe_to_server_notifications(session, server_name)
+
+                        try:
+                            await asyncio.sleep(float('inf'))
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            logger.debug(f"Notification stream error for {server_name}: {e}")
+
+            except asyncio.CancelledError:
+                self.server_connections[server_url]["active"] = False
+                raise
+            except Exception as e:
+                logger.debug(f"Error in notification listener for {server_name}: {e}")
+                self.server_connections[server_url]["active"] = False
+
+                # Exponential backoff before retry
+                if self.is_running:
+                    await asyncio.sleep(5)
 
 
 class Yarp_mcpClient_BaseCore:
@@ -48,6 +245,10 @@ class Yarp_mcpClient_BaseCore:
         self.system_prompt_addenda: Dict[str, str] = {}  # Maps server name to system prompt addendum
         self.available_tools = []
         self.system_prompt = ""  # Will be built dynamically after discovery
+
+        # Notification infrastructure
+        self.notification_dispatcher = NotificationDispatcher()
+        self.notification_listener = NotificationListener(self.notification_dispatcher)
 
         # Load custom prompt from file if provided
         if self.custom_prompt_file:
@@ -157,6 +358,10 @@ class Yarp_mcpClient_BaseCore:
                             for tool_name in descriptions.keys():
                                 self.tool_to_server[tool_name] = server_name
                         logger.info(f"Discovered MCP server '{server_name}' at {server_info.get('url', 'unknown')} with {len(descriptions)} tools")
+
+                        # Add server to notification listener so we can receive notifications
+                        if server_info.get("url"):
+                            await self.notification_listener.add_server(server_info["url"], server_name)
                 except Exception as e:
                     logger.debug(f"Could not query {port_name}: {e}")
 
@@ -611,6 +816,10 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
         print(f"{Colors.OKBLUE}Discovering MCP servers...{Colors.ENDC}")
         await self.discover_mcp_servers()
 
+        # Start notification listener after server discovery
+        print(f"{Colors.OKBLUE}Starting notification listener for real-time updates...{Colors.ENDC}")
+        await self.notification_listener.start()
+
         # Build available tools from discovered descriptions
         self.available_tools = self.get_available_tools()
 
@@ -660,6 +869,10 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
 
         # Call subclass cleanup hook
         await self._run_loop_cleanup()
+
+        # Stop notification listener
+        print(f"{Colors.OKBLUE}Stopping notification listener...{Colors.ENDC}")
+        await self.notification_listener.stop()
 
         # Cleanup input mode
         await self.input_mode.cleanup()

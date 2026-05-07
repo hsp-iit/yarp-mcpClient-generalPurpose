@@ -28,6 +28,7 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
         # Initialize background task manager
         self.task_manager = BackgroundTaskManager(self.call_mcp_tool)
         self.task_manager.register_notification_callback(self._on_task_completion)
+        self.notification_dispatcher.register_handler("*", self.task_manager.handle_notification)
 
     async def _on_task_completion(self, task_id: str, task, message: str):
         """Callback when a background monitoring task completes
@@ -69,6 +70,36 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
                 await self.input_mode.send_response(response)
         except Exception as e:
             logger.error(f"Error generating response to task completion: {e}")
+
+    async def _track_server_side_task(self, fn_name: str, result: Dict[str, Any]):
+        """Create a local shadow task for server-side MCP task notifications."""
+        if not result.get("success") or not result.get("task_id"):
+            return
+
+        task_id = result["task_id"]
+        server_name = self.tool_to_server.get(fn_name)
+        server_url = self.mcp_urls.get(server_name, "") if server_name else ""
+
+        if fn_name in {
+            "goto_target_by_absolute_location",
+            "goto_target_by_relative_location",
+            "follow_path",
+        }:
+            await self.task_manager.track_external_task(
+                task_id=task_id,
+                target_tool="get_navigation_status",
+                condition="status == 'goal_reached' or status in ['aborted', 'failing', 'error']",
+                server_url=server_url,
+                timeout=300.0,
+            )
+        elif fn_name == "start_battery_charge_monitor":
+            await self.task_manager.track_external_task(
+                task_id=task_id,
+                target_tool="get_battery_charge",
+                condition=result.get("condition", "True"),
+                server_url=server_url,
+                timeout=0.0,
+            )
 
     def _get_system_prompt_additions(self) -> str:
         """Get additional text to add to system prompt for monitoring capabilities."""
@@ -259,18 +290,17 @@ The monitoring task will run in the background and notify you when the condition
             result = await self.task_manager.get_task_status(task_id)
 
             # Print feedback about monitoring status check
-            if result.get("success") and result.get("task"):
-                task = result.get("task")
-                status = task.get("status")
+            if result.get("success"):
+                status = result.get("status")
                 print(f"\n{Colors.OKCYAN}📊 Monitoring Status:{Colors.ENDC}")
-                print(f"   Task ID:        {task_id}")
+                print(f"   Task ID:        {result.get('task_id')}")
                 print(f"   Status:         {status}")
-                print(f"   Target Tool:    {task.get('target_tool')}")
-                print(f"   Condition:      {task.get('condition')}")
-                print(f"   Elapsed:        {task.get('elapsed_time', 0):.1f}s")
-                print(f"   Timeout:        {task.get('timeout')}s")
-                if task.get('last_result'):
-                    print(f"   Last Result:    {json.dumps(task.get('last_result'), indent=18)}")
+                print(f"   Target Tool:    {result.get('target_tool')}")
+                print(f"   Condition:      {result.get('condition')}")
+                print(f"   Elapsed:        {result.get('elapsed_time', 0):.1f}s")
+                print(f"   Timeout:        {result.get('timeout')}s")
+                if result.get('last_result'):
+                    print(f"   Last Result:    {json.dumps(result.get('last_result'), indent=18)}")
                 print()
             elif result.get("error"):
                 error_msg = result.get("error", "Unknown error")
@@ -302,7 +332,9 @@ The monitoring task will run in the background and notify you when the condition
 
         else:
             # For regular tools, use parent's implementation
-            return await super()._handle_tool_call(tool_call)
+            result = await super()._handle_tool_call(tool_call)
+            await self._track_server_side_task(fn_name, result)
+            return result
 
     async def _run_loop_setup(self):
         """Setup hook to initialize the background task manager event loop."""
