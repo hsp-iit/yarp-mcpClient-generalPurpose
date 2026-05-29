@@ -23,8 +23,9 @@ class MonitoringTask:
     last_result: Optional[Dict[str, Any]] = None
     is_active: bool = True
     is_complete: bool = False
-    completion_reason: str = ""  # "condition_met", "timeout", "cancelled"
+    completion_reason: str = ""  # "condition_met", "timeout", "cancelled", "notification"
     completion_result: Optional[Dict[str, Any]] = None
+    use_notifications: bool = False  # Whether this task prefers notification-based completion
 
     def elapsed_time(self) -> float:
         """Get elapsed time in seconds since task creation"""
@@ -62,6 +63,114 @@ class BackgroundTaskManager:
             callback: Async callable that takes (task_id, task, notification_message)
         """
         self.notification_callbacks.append(callback)
+
+    async def handle_notification(self, notification_method: str, params: Dict[str, Any]):
+        """Handle an incoming notification from an MCP server
+
+        This method processes notifications about task events (e.g., tool call completion,
+        status changes) and updates monitoring tasks accordingly.
+
+        Args:
+            notification_method: The notification method name (e.g., "task/complete", "task/status_changed")
+            params: The notification parameters
+        """
+        if not self._is_monitoring_notification(notification_method):
+            return
+
+        event_type = params.get("event") or self._event_type_from_method(notification_method)
+        task_id = params.get("task_id") or params.get("taskId")
+        tool = params.get("tool") or params.get("target_tool")
+        server_url = params.get("_server_url")
+        mcp_task_status = params.get("status")
+        data = self._extract_notification_result(params)
+
+        notifications_to_send = []
+        with self.task_lock:
+            if task_id and task_id in self.tasks:
+                candidate_tasks = [self.tasks[task_id]]
+            else:
+                candidate_tasks = [
+                    task for task in self.tasks.values()
+                    if task.is_active
+                    and not task.is_complete
+                    and (not tool or task.target_tool == tool)
+                    and (not server_url or not task.server_url or task.server_url == server_url)
+                ]
+
+            for task in candidate_tasks:
+                task.last_result = data
+
+                condition_met = self._evaluate_condition(data, task.condition)
+                terminal_task_status = (
+                    notification_method == "notifications/tasks/status"
+                    and mcp_task_status in {"completed", "failed", "cancelled"}
+                )
+                exact_task_completed = (
+                    bool(task_id)
+                    and task_id == task.task_id
+                    and (
+                        event_type in {"complete", "completed", "failed", "cancelled"}
+                        or terminal_task_status
+                    )
+                )
+
+                if condition_met or exact_task_completed:
+                    task.is_active = False
+                    task.is_complete = True
+                    task.completion_reason = "notification"
+                    task.completion_result = data
+
+                    message = (
+                        f"🔔 Monitoring task {task.task_id} condition met via MCP notification! "
+                        f"Result: {json.dumps(data, indent=2)}"
+                    )
+                    logger.info(message)
+                    notifications_to_send.append((task.task_id, task, message))
+
+        for completed_task_id, completed_task, message in notifications_to_send:
+            await self._notify(completed_task_id, completed_task, message)
+
+    def _is_monitoring_notification(self, notification_method: str) -> bool:
+        """Return True for notification methods that can update monitors."""
+        return notification_method.startswith("task/") or notification_method == "notifications/tasks/status"
+
+    def _event_type_from_method(self, notification_method: str) -> str:
+        """Map notification method names to a compact event type."""
+        if notification_method == "notifications/tasks/status":
+            return "status_changed"
+        return notification_method.rsplit("/", 1)[-1]
+
+    def _extract_notification_result(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize custom and MCP task notification payloads into condition data."""
+        data = params.get("data")
+        if isinstance(data, dict):
+            result = dict(data)
+        else:
+            result = {}
+
+        for key in (
+            "task_id",
+            "taskId",
+            "event",
+            "tool",
+            "target_tool",
+            "status",
+            "statusMessage",
+            "createdAt",
+            "lastUpdatedAt",
+            "ttl",
+            "pollInterval",
+        ):
+            if key in params and key not in result:
+                result[key] = params[key]
+
+        if "status" in params and result.get("status") != params["status"]:
+            result["mcp_task_status"] = params["status"]
+
+        if "success" not in result and "error" not in result:
+            result["success"] = True
+
+        return result
 
     async def start_monitoring(
         self,
@@ -108,21 +217,20 @@ class BackgroundTaskManager:
                 "error": "timeout must be positive"
             }
 
-        # Generate unique task ID
-        self.task_counter += 1
-        task_id = f"monitor_{self.task_counter}"
-
-        # Create monitoring task
-        task = MonitoringTask(
-            task_id=task_id,
-            target_tool=target_tool,
-            poll_interval=poll_interval,
-            timeout=timeout,
-            condition=condition,
-            server_url=server_url or ""
-        )
-
         with self.task_lock:
+            # Generate unique task ID
+            self.task_counter += 1
+            task_id = f"monitor_{self.task_counter}"
+
+            # Create monitoring task
+            task = MonitoringTask(
+                task_id=task_id,
+                target_tool=target_tool,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                condition=condition,
+                server_url=server_url or ""
+            )
             self.tasks[task_id] = task
 
         # logger.info(f"Started monitoring task {task_id}: {target_tool} with condition '{condition}'")
@@ -138,6 +246,45 @@ class BackgroundTaskManager:
             "success": True,
             "task_id": task_id,
             "message": f"Started monitoring {target_tool} with condition: {condition}"
+        }
+
+    async def track_external_task(
+        self,
+        task_id: str,
+        target_tool: str,
+        condition: str = "True",
+        server_url: str = "",
+        timeout: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Track a server-side task that will complete via MCP notifications."""
+        if not task_id:
+            return {
+                "success": False,
+                "error": "task_id cannot be empty"
+            }
+
+        with self.task_lock:
+            if task_id in self.tasks:
+                return {
+                    "success": True,
+                    "task_id": task_id,
+                    "message": f"Already tracking server-side task {task_id}"
+                }
+
+            self.tasks[task_id] = MonitoringTask(
+                task_id=task_id,
+                target_tool=target_tool,
+                poll_interval=1.0,
+                timeout=timeout,
+                condition=condition or "True",
+                server_url=server_url or "",
+                use_notifications=True,
+            )
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"Tracking server-side task {task_id}"
         }
 
     async def stop_monitoring(self, task_id: str) -> Dict[str, Any]:
@@ -194,8 +341,10 @@ class BackgroundTaskManager:
             "task_id": task_id,
             "target_tool": task.target_tool,
             "condition": task.condition,
+            "status": self._task_status_label(task),
             "is_active": task.is_active,
             "is_complete": task.is_complete,
+            "timeout": task.timeout,
             "elapsed_time": task.elapsed_time(),
             "remaining_time": task.remaining_time(),
             "last_poll": task.last_poll.isoformat() if task.last_poll else None,
@@ -222,10 +371,15 @@ class BackgroundTaskManager:
                     "task_id": task_id,
                     "target_tool": task.target_tool,
                     "condition": task.condition,
+                    "status": self._task_status_label(task),
                     "is_active": task.is_active,
                     "is_complete": task.is_complete,
+                    "timeout": task.timeout,
                     "elapsed_time": task.elapsed_time(),
-                    "remaining_time": task.remaining_time()
+                    "remaining_time": task.remaining_time(),
+                    "last_result": task.last_result,
+                    "completion_reason": task.completion_reason if task.is_complete else None,
+                    "completion_result": task.completion_result if task.is_complete else None
                 })
 
         return {
@@ -234,6 +388,14 @@ class BackgroundTaskManager:
             "total_tasks": len(tasks_list),
             "tasks": tasks_list
         }
+
+    def _task_status_label(self, task: MonitoringTask) -> str:
+        """Return a compact human-readable task state."""
+        if task.is_active:
+            return "active"
+        if task.is_complete:
+            return task.completion_reason or "complete"
+        return "inactive"
 
     def _evaluate_condition(self, result: Dict[str, Any], condition: str) -> bool:
         """
@@ -259,7 +421,7 @@ class BackgroundTaskManager:
                 eval_env.update(result)
 
             # Evaluate the condition
-            eval_result = bool(eval(condition, eval_env))
+            eval_result = bool(eval(condition, {"__builtins__": {}}, eval_env))
             return eval_result
         except Exception as e:
             logger.warning(f"Error evaluating condition '{condition}': {e}")
@@ -277,7 +439,7 @@ class BackgroundTaskManager:
             with self.task_lock:
                 tasks_to_check = [
                     task for task in self.tasks.values()
-                    if task.is_active and not task.is_complete
+                    if task.is_active and not task.is_complete and not task.use_notifications
                 ]
 
             # If no active tasks, stop the loop
@@ -344,7 +506,7 @@ class BackgroundTaskManager:
             with self.task_lock:
                 tasks_to_check = [
                     task for task in self.tasks.values()
-                    if task.is_active and not task.is_complete
+                    if task.is_active and not task.is_complete and not task.use_notifications
                 ]
 
             # If no active tasks, stop the loop

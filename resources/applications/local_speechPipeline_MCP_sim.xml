@@ -1,0 +1,184 @@
+<application>
+    <name>Local_Speech_Pipeline_MCP_sim</name>
+
+    <dependencies>
+    </dependencies>
+
+    <!-- Audio hardware devices -->
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context speechPipeline --from micAudio.ini --mic_sound_on_stop 0 --mic_start 1 --mic_min_samples 4000 --mic_max_samples 4000</parameters>
+        <node>console</node>
+    </module>
+
+
+    <!-- Interaction management -->
+
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context vadModule --from audioPlayer.ini</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>python3</name>
+        <parameters>oww.py --models hey_r_one.onnx</parameters>
+        <workdir>$ENV{ROBOT_CODE}/tour-guide-robot/aux_modules/speechProcessing/openWakeWord</workdir>
+        <node>console-mcp</node>
+    </module>
+
+    <module>
+        <name>sileroVAD</name>
+        <parameters></parameters>
+        <environment>YARP_LOG_PROCESS_LABEL=VAD</environment>
+        <node>console-mcp</node>
+    </module>
+
+    <module>
+        <name>python3</name>
+        <parameters>play_notification.py</parameters>
+        <node>console</node>
+        <workdir>$ENV{ROBOT_CODE}/tour-guide-robot/aux_modules/speechProcessing/wakeWordDetection</workdir>
+    </module>
+
+    <module>
+        <name>speechMicController</name>
+        <parameters></parameters>
+        <node>console</node>
+    </module>
+
+
+    <!-- Face expression display -->
+
+    <module>
+        <name>yarpview</name>
+        <parameters>--name /robot/faceDisplay/image:i</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>faceExpressionImage5GTour</name>
+        <parameters></parameters>
+        <node>console</node>
+    </module>
+
+
+    <!-- speech synthesizer and transcription -->
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context speechPipeline --from whisperTranscription.ini</parameters>
+        <node>console-mcp</node>
+    </module>
+
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context speechPipeline --from voiceBoxSynthesizer.ini</parameters>
+        <node>console-mcp</node>
+    </module>
+
+
+    <!-- Connections -->
+
+    <connection>
+        <from>/audioRecorder_nws/audio:o</from>
+        <to>/wake/audio:i</to>
+        <protocol>fast_tcp+recv.portmonitor+file.soundfilter_resample+type.dll+channel.0+frequency.16000</protocol>
+    </connection>
+
+    <connection>
+        <from>/vad/audio:o</from>
+        <to>/speechMicController/sound:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/audioPlayerWrapper/status:o</from>
+        <to>/speechMicController/audioPlayStatus:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/soundCatcher/microphone:rpc</from>
+        <to>/audioRecorder_nws/rpc</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/bufferCatcher/microphone:rpc</from>
+        <to>/audioRecorder_nws/rpc</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/transcriptionCatcher/microphone:rpc</from>
+        <to>/audioRecorder_nws/rpc</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/speechTranscription_nws/text:o</from>
+        <to>/speechMicController/transcription:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/wake/audio:o</from>
+        <to>/vad/audio:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/vad/rpc:o</from>
+        <to>/wake/rpc:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/vad/audio:o</from>
+        <to>/speechTranscription_nws/sound:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/speechSynthesizer_nws/sound:o</from>
+        <to>/audioPlayerWrapper/audio:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/faceExpressionImage/image:o</from>
+        <to>/robot/faceDisplay/image:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/audioPlayerWrapper/status:o</from>
+        <to>/faceExpressionImage/mouthAudioData:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/audioRecorder_nws/status:o</from>
+        <to>/faceExpressionImage/earsAudioStatus:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/audioRecorder_nws/audio:o</from>
+        <to>/faceExpressionImage/earsAudioData:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/wake/notification:o</from>
+        <to>/wake_notification:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/wake/face:o</from>
+        <to>/faceExpressionImage/rpc</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+</application>

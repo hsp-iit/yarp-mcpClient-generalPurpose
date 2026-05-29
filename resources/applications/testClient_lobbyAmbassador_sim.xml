@@ -10,7 +10,7 @@
     </application>
 
     <application>
-        <name>Speech_Pipeline_MCP_sim</name>
+        <name>Local_Speech_Pipeline_MCP_sim</name>
         <prefix></prefix>
     </application>
 
