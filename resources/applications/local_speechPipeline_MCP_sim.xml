@@ -71,6 +71,13 @@
     </module>
 
     <module>
+        <name>bun</name>
+        <parameters>dev:server</parameters>
+        <node>console-mcp</node>
+        <workdir>$ENV{VOICEBOX}</workdir>
+    </module>
+
+    <module>
         <name>yarprobotinterface</name>
         <parameters>--context speechPipeline --from voiceBoxSynthesizer.ini</parameters>
         <node>console-mcp</node>
