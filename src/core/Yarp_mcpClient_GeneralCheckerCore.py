@@ -1,5 +1,4 @@
 import json
-import asyncio
 import logging
 from typing import Dict, Any, List
 from ..llm_backends.llm_backend_base import LLMBackend
@@ -26,8 +25,8 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
         self.monitoring_metadata: Dict[str, Dict[str, Any]] = {}  # Tool name -> monitoring metadata
 
         # Initialize background task manager
-        self.task_manager = BackgroundTaskManager(self.call_mcp_tool)
-        self.task_manager.register_notification_callback(self._on_task_completion)
+        self.task_manager = BackgroundTaskManager()
+        self.task_manager.register_completion_callback(self._on_task_completion)
         self.notification_dispatcher.register_handler("*", self.task_manager.handle_notification)
 
     async def _on_task_completion(self, task_id: str, task, message: str):
@@ -47,7 +46,7 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
 
         # Print prominent notification to terminal
         print(f"\n{Colors.OKGREEN}{'='*80}")
-        print(f"🔔 BACKGROUND MONITORING TASK COMPLETED")
+        print(f"🔔 SERVER-SIDE TASK COMPLETED")
         print(f"{'='*80}")
         print(f"{message}")
         print(f"{'='*80}{Colors.ENDC}\n")
@@ -110,30 +109,26 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
 When using YARP tools:
 1. Use function calls for actual operations - do NOT generate fake JSON or mock responses
 2. Describe what you're doing in plain English alongside the function calls
-3. For monitoring tasks, always explain the condition you're waiting for
+3. For tools that return a task_id, server-side MCP notifications will update the tracked task state
 4. Be helpful and conversational while executing YARP tools
-5. Multiple monitoring tasks can run simultaneously in the background
+5. Multiple server-side tasks can run simultaneously in the background
 6. Users can ask "what's the status?" at any time and you can check with get_monitoring_status()"""
 
         if monitoring_tools:
             prompt_additions += f"""
 
-**Background Monitoring Capabilities** (available for {len(monitoring_tools)} tools):
-You have access to background monitoring tools that allow you to:
-- `start_monitoring(target_tool, condition, poll_interval, timeout)` - Start monitoring a tool and wait for a condition
-- `get_monitoring_status(task_id)` - Check status of a monitoring task
-- `stop_monitoring(task_id)` - Cancel a monitoring task
-- `list_monitoring_tasks()` - List all active monitoring tasks
+**Server-Side Task Notifications** (available for {len(monitoring_tools)} tools):
+Some tools return a task_id and continue running on the MCP server. Those tasks are tracked locally from MCP notifications.
+- `get_monitoring_status(task_id)` - Check status of a tracked server-side task
+- `list_monitoring_tasks()` - List all tracked server-side tasks
 
 Examples:
 - User: "Let me know when navigation is complete"
-  → Call: start_monitoring("get_navigation_status", "status == 'reached'")
+  → Call a navigation tool and keep the returned task_id for status checks
 - User: "Wait until battery is below 20%"
-  → Call: start_monitoring("get_battery_charge", "charge < 20")
-- User: "Tell me when position reaches coordinates X,Y"
-  → Call: start_monitoring("get_current_position", "x > 5.0 and y < 3.0")
+  → Call the server-side battery monitoring tool and keep the returned task_id
 
-The monitoring task will run in the background and notify you when the condition is met."""
+The server will notify this client when the task reaches a terminal state."""
 
         return prompt_additions
 
@@ -147,54 +142,6 @@ The monitoring task will run in the background and notify you when the condition
             {
                 "type": "function",
                 "function": {
-                    "name": "start_monitoring",
-                    "description": "Start a background task to monitor a tool and wait for a condition to be met. Useful for waiting for navigation completion, battery level changes, or other state transitions. The task will poll the specified tool at regular intervals and notify when the condition is satisfied.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "target_tool": {
-                                "type": "string",
-                                "description": "Name of the tool to monitor (e.g., 'get_navigation_status', 'get_battery_charge')"
-                            },
-                            "condition": {
-                                "type": "string",
-                                "description": "Condition to wait for. Use Python comparison syntax (e.g., \"status == 'reached'\", \"charge > 80\", \"value < 10\"). The condition is evaluated against the tool's result."
-                            },
-                            "poll_interval": {
-                                "type": "number",
-                                "description": "Seconds between polling attempts (default: 1.0)",
-                                "default": 1.0
-                            },
-                            "timeout": {
-                                "type": "number",
-                                "description": "Maximum seconds to wait before timing out (default: 60.0)",
-                                "default": 60.0
-                            }
-                        },
-                        "required": ["target_tool", "condition"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "stop_monitoring",
-                    "description": "Cancel a background monitoring task.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "ID of the monitoring task to stop (returned from start_monitoring)"
-                            }
-                        },
-                        "required": ["task_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "get_monitoring_status",
                     "description": "Check the status of a background monitoring task.",
                     "parameters": {
@@ -202,7 +149,7 @@ The monitoring task will run in the background and notify you when the condition
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "ID of the monitoring task (returned from start_monitoring)"
+                                "description": "ID of a tracked server-side task returned by an MCP tool"
                             }
                         },
                         "required": ["task_id"]
@@ -230,62 +177,7 @@ The monitoring task will run in the background and notify you when the condition
         fn_args = json.loads(tool_call.function.arguments)
 
         # Handle special background monitoring tools
-        if fn_name == "start_monitoring":
-            target_tool = fn_args.get("target_tool")
-            condition = fn_args.get("condition")
-            poll_interval = fn_args.get("poll_interval", 1.0)
-            timeout = fn_args.get("timeout", 60.0)
-            server_url = None
-
-            # Determine which server the target tool belongs to
-            if target_tool in self.tool_to_server:
-                server_name = self.tool_to_server[target_tool]
-                if server_name in self.mcp_urls:
-                    server_url = self.mcp_urls[server_name]
-            else:
-                # Use first available server
-                server_url = next(iter(self.mcp_urls.values())) if self.mcp_urls else None
-
-            result = await self.task_manager.start_monitoring(
-                target_tool=target_tool,
-                condition=condition,
-                poll_interval=poll_interval,
-                timeout=timeout,
-                server_url=server_url
-            )
-
-            # Print feedback about the monitoring activation
-            if result.get("success"):
-                task_id = result.get("task_id")
-                print(f"\n{Colors.OKGREEN}{'='*80}")
-                print(f"✅ BACKGROUND MONITORING ACTIVATED")
-                print(f"{'='*80}")
-                print(f"   Task ID:        {Colors.BOLD}{task_id}{Colors.ENDC}{Colors.OKGREEN}")
-                print(f"   Monitoring:     {target_tool}")
-                print(f"   Condition:      {condition}")
-                print(f"   Poll Interval:  {poll_interval}s")
-                print(f"   Timeout:        {timeout}s")
-                print(f"{'='*80}{Colors.ENDC}\n")
-            else:
-                error_msg = result.get("error", "Unknown error")
-                print(f"\n{Colors.FAIL}❌ Failed to start monitoring: {error_msg}{Colors.ENDC}\n")
-
-            return result
-
-        elif fn_name == "stop_monitoring":
-            task_id = fn_args.get("task_id")
-            result = await self.task_manager.stop_monitoring(task_id)
-
-            # Print feedback about monitoring stop
-            if result.get("success"):
-                print(f"\n{Colors.WARNING}⏹️  Monitoring task {task_id} stopped{Colors.ENDC}\n")
-            else:
-                error_msg = result.get("error", "Unknown error")
-                print(f"\n{Colors.FAIL}❌ Failed to stop monitoring: {error_msg}{Colors.ENDC}\n")
-
-            return result
-
-        elif fn_name == "get_monitoring_status":
+        if fn_name == "get_monitoring_status":
             task_id = fn_args.get("task_id")
             result = await self.task_manager.get_task_status(task_id)
 
@@ -335,11 +227,6 @@ The monitoring task will run in the background and notify you when the condition
             result = await super()._handle_tool_call(tool_call)
             await self._track_server_side_task(fn_name, result)
             return result
-
-    async def _run_loop_setup(self):
-        """Setup hook to initialize the background task manager event loop."""
-        # Set the main event loop for background task manager
-        self.task_manager.main_loop = asyncio.get_running_loop()
 
     async def _run_loop_cleanup(self):
         """Cleanup hook to stop background tasks."""
