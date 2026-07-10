@@ -19,10 +19,7 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
             input_mode: Input mode for getting user input
             llm_backend: LLM backend for chat completion
         """
-        super().__init__(input_mode, llm_backend, custom_prompt_file=None)
-
-        # Monitoring-specific attributes
-        self.monitoring_metadata: Dict[str, Dict[str, Any]] = {}  # Tool name -> monitoring metadata
+        Yarp_mcpClient_BaseCore.__init__(self,input_mode, llm_backend, custom_prompt_file=None)
 
         # Initialize background task manager
         self.task_manager = BackgroundTaskManager()
@@ -102,8 +99,6 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
 
     def _get_system_prompt_additions(self) -> str:
         """Get additional text to add to system prompt for monitoring capabilities."""
-        # Add monitoring capabilities section
-        monitoring_tools = [t for t in self.tool_descriptions_cache.keys() if t in self.monitoring_metadata]
 
         prompt_additions = """
 When using YARP tools:

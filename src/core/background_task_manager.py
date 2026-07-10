@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 from typing import Dict, Any, Optional, Callable, List
@@ -320,7 +321,7 @@ class BackgroundTaskManager:
         """
         for callback in self.completion_callbacks:
             try:
-                if asyncio.iscoroutinefunction(callback):
+                if inspect.iscoroutinefunction(callback):
                     await callback(task_id, task, message)
                 else:
                     callback(task_id, task, message)
