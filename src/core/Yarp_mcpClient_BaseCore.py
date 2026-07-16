@@ -484,10 +484,15 @@ class Yarp_mcpClient_BaseCore:
                             # Extract descriptions from tools
                             descriptions = {}
                             for tool in tools_response.tools:
+                                meta =getattr(tool, "meta", None) or {}
                                 # Store tool info including description and schema
                                 descriptions[tool.name] = {
                                     "description": tool.description,
-                                    "inputSchema": tool.inputSchema.model_dump() if hasattr(tool.inputSchema, 'model_dump') else dict(tool.inputSchema)
+                                    "inputSchema": tool.inputSchema.model_dump() if hasattr(tool.inputSchema, 'model_dump') else dict(tool.inputSchema),
+                                    "emits_notifications":  meta.get("x-yarp/emitsNotifications") if meta else False,
+                                    "kind": meta.get("x-yarp/notificationKind") if meta else None,
+                                    "method": meta.get("x-yarp/notificationMethod") if meta else None,
+                                    "requires_subscription": meta.get("x-yarp/requiresSubscription") if meta else None
                                 }
 
                             server_info["descriptions"] = descriptions
