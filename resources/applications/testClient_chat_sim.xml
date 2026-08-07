@@ -42,9 +42,8 @@
     </module>
 
     <module>
-        <name>python3</name>
-        <parameters>yarp_server_launcher.py --context test_servers --from test_batteryNnavigationNSynth.ini</parameters>
-        <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers</workdir>
+        <name>yarp_server_launcher.py</name>
+        <parameters>--context test_servers --from test_batteryNnavigationNSynth.ini</parameters>
         <node>console-mcp</node>
     </module>
 

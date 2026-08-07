@@ -23,16 +23,14 @@
     </module>
 
     <module>
-        <name>python3</name>
-        <parameters>yarp_server_launcher.py --context test_servers --from test_lobbyAmbassador.ini</parameters>
-        <workdir>$ENV{ROBOT_CODE}/yarp-mcpServers</workdir>
+        <name>yarp_server_launcher.py</name>
+        <parameters>--context test_servers --from test_lobbyAmbassador.ini</parameters>
         <node>console-mcp</node>
     </module>
 
     <module>
-        <name>python3</name>
-        <parameters>Yarp_mcpClient_GeneralPurpose.py --core checker --mode yarp --yarp-port /testClient/text:i</parameters>
-        <workdir>$ENV{ROBOT_CODE}/yarp-mcpClient-generalPurpose</workdir>
+        <name>Yarp_mcpClient_GeneralPurpose.py</name>
+        <parameters>--core checker --mode yarp --yarp-port /testClient/text:i</parameters>
         <node>console-mcp</node>
     </module>
 

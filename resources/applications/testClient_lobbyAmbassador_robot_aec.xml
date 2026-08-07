@@ -1,30 +1,24 @@
 <application>
-    <name>Test_MCP_CLIENT_LobbyAmbassador_aec_sim</name>
+    <name>Test_MCP_CLIENT_LobbyAmbassador_robot_aec</name>
     <dependencies>
     </dependencies>
 
     <!-- Applications -->
     <application>
-        <name>Navigation_ROS2_R1Mk3_SIM_light</name>
+        <name>Navigation_ROS2_R1SN003</name>
         <prefix></prefix>
     </application>
 
     <application>
-        <name>Local_Speech_Pipeline_aec_MCP_sim</name>
+        <name>Speech_Pipeline_MCP_robot_aec</name>
         <prefix></prefix>
     </application>
 
 
     <!-- Modules -->
     <module>
-        <name>yarprobotinterface</name>
-        <parameters>--from mcpFakeBattery.ini</parameters>
-        <node>console</node>
-    </module>
-
-    <module>
         <name>yarp_server_launcher.py</name>
-        <parameters>--context test_servers --from test_lobbyAmbassador.ini</parameters>
+        <parameters>--context test_servers --from test_lobbyAmbassador_robot.ini</parameters>
         <node>console-mcp</node>
     </module>
 
@@ -34,8 +28,8 @@
         <node>console-mcp</node>
     </module>
 
-    <!-- Connections -->
 
+    <!-- Connections -->
     <connection>
         <from>/speechTranscription_nws/text:o</from>
         <to>/testClient/text:i</to>

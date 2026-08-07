@@ -1,23 +1,14 @@
 <application>
-    <name>Local_Speech_Pipeline_MCP_sim</name>
+    <name>Speech_Pipeline_MCP_robot_aec</name>
 
     <dependencies>
     </dependencies>
 
-    <!-- Audio hardware devices -->
+    <!-- recording audio from microphone -->
     <module>
         <name>yarprobotinterface</name>
         <parameters>--context speechPipeline --from micAudio.ini --mic_sound_on_stop 0 --mic_start 1 --mic_min_samples 4000 --mic_max_samples 4000</parameters>
-        <node>console</node>
-    </module>
-
-
-    <!-- Interaction management -->
-
-    <module>
-        <name>yarprobotinterface</name>
-        <parameters>--context vadModule --from audioPlayer.ini</parameters>
-        <node>console</node>
+        <node>r1-torso</node>
     </module>
 
     <module>
@@ -29,7 +20,7 @@
 
     <module>
         <name>sileroVAD</name>
-        <parameters>--silero_context silero_vad --silero_from silero_vad.onnx</parameters>
+        <parameters></parameters>
         <environment>YARP_LOG_PROCESS_LABEL=VAD</environment>
         <node>console-mcp</node>
     </module>
@@ -37,23 +28,26 @@
     <module>
         <name>python3</name>
         <parameters>play_notification.py</parameters>
-        <node>console</node>
+        <node>r1-face</node>
         <workdir>$ENV{TOUR_GUIDE_ROBOT_SOURCE_DIR}/aux_modules/speechProcessing/wakeWordDetection</workdir>
     </module>
 
     <module>
-        <name>speechMicController</name>
+        <name>aecComponent</name>
         <parameters></parameters>
-        <node>console</node>
+        <node>console-mcp</node>
     </module>
 
-
-    <!-- Face expression display -->
+    <module>
+        <name>yarprobotinterface </name>
+        <parameters>--context headSynchronizer --from faceDisplay.ini</parameters>
+        <node>r1-face</node>
+    </module>
 
     <module>
-        <name>yarpview</name>
-        <parameters>--name /robot/faceDisplay/image:i</parameters>
-        <node>console</node>
+        <name>yarprobotinterface</name>
+        <parameters>--context vadModule --from audioPlayer.ini</parameters>
+        <node>r1-face</node>
     </module>
 
     <module>
@@ -63,13 +57,7 @@
     </module>
 
 
-    <!-- speech synthesizer and transcription -->
-    <module>
-        <name>yarprobotinterface</name>
-        <parameters>--context speechPipeline --from whisperTranscription.ini</parameters>
-        <node>console-mcp</node>
-    </module>
-
+    <!-- speech synthesizer -->
     <module>
         <name>bun</name>
         <parameters>dev:server</parameters>
@@ -83,6 +71,11 @@
         <node>console-mcp</node>
     </module>
 
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--context speechPipeline --from azureTranscription_tr.ini</parameters>
+        <node>console-mcp</node>
+    </module>
 
     <!-- Connections -->
 
@@ -93,43 +86,13 @@
     </connection>
 
     <connection>
-        <from>/vad/audio:o</from>
-        <to>/speechMicController/sound:i</to>
-        <protocol>fast_tcp</protocol>
-    </connection>
-
-    <connection>
-        <from>/audioPlayerWrapper/status:o</from>
-        <to>/speechMicController/audioPlayStatus:i</to>
-        <protocol>fast_tcp</protocol>
-    </connection>
-
-    <connection>
-        <from>/soundCatcher/microphone:rpc</from>
-        <to>/audioRecorder_nws/rpc</to>
-        <protocol>fast_tcp</protocol>
-    </connection>
-
-    <connection>
-        <from>/bufferCatcher/microphone:rpc</from>
-        <to>/audioRecorder_nws/rpc</to>
-        <protocol>fast_tcp</protocol>
-    </connection>
-
-    <connection>
-        <from>/transcriptionCatcher/microphone:rpc</from>
-        <to>/audioRecorder_nws/rpc</to>
-        <protocol>fast_tcp</protocol>
-    </connection>
-
-    <connection>
-        <from>/speechTranscription_nws/text:o</from>
-        <to>/speechMicController/transcription:i</to>
-        <protocol>fast_tcp</protocol>
-    </connection>
-
-    <connection>
         <from>/wake/audio:o</from>
+        <to>/aecComponent/microphone:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/aecComponent/audio:o</from>
         <to>/vad/audio:i</to>
         <protocol>fast_tcp</protocol>
     </connection>
@@ -149,6 +112,12 @@
     <connection>
         <from>/speechSynthesizer_nws/sound:o</from>
         <to>/audioPlayerWrapper/audio:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+    <connection>
+        <from>/speechSynthesizer_nws/sound:o</from>
+        <to>/aecComponent/reference:i</to>
         <protocol>fast_tcp</protocol>
     </connection>
 
