@@ -35,6 +35,8 @@ class YarpInputMode(InputMode):
             message = bottle.get(0).asString()
             print(f"\033[92m📥 Received from YARP: {message}\033[0m")
             return message
+        else:
+            print(f"\033[93m⚠️ No message received on {self.port_name}\033[0m")
         import asyncio
         await asyncio.sleep(0.1)
         return ""
