@@ -10,6 +10,7 @@ import threading
 from collections import defaultdict
 from ..llm_backends.llm_backend_base import LLMBackend
 from ..input_modes.input_mode_base import InputMode
+from ..utils.fancyLogging import FancyLogger
 
 # Try to import YARP for port discovery
 try:
@@ -55,11 +56,12 @@ class Colors:
 class NotificationDispatcher:
     """Manages notification handlers and dispatches incoming notifications"""
 
-    def __init__(self):
+    def __init__(self, enableExplicitLogging: bool = True):
         # Maps notification method to list of handlers
         # Format: "method_name" -> [callable, callable, ...]
         self.handlers: Dict[str, List[Callable]] = defaultdict(list)
         self.lock = asyncio.Lock()
+        self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=enableExplicitLogging)
 
     def register_handler(self, notification_method: str, handler: Callable):
         """Register a handler for a specific notification method
@@ -91,7 +93,7 @@ class NotificationDispatcher:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as e:
-                logger.error(f"Error in notification handler for {notification_method}: {e}")
+                self.fancyLog.ERROR(f"Error in notification handler for {notification_method}: {e}")
 
 
 class NotificationListener:
@@ -143,7 +145,7 @@ class NotificationListener:
     async def _handle_session_message(self, server_url: str, server_name: str, message: Any):
         """Extract and dispatch notifications delivered by ClientSession."""
         if isinstance(message, Exception):
-            logger.debug(f"Notification listener received exception from {server_name}: {message}")
+            self.fancyLog.DEBUG(f"Notification listener received exception from {server_name}: {message}")
             return
 
         notification = getattr(message, "root", None)
@@ -176,11 +178,11 @@ class NotificationListener:
         try:
             result = await session.call_tool("subscribe_notifications", {})
             if getattr(result, "isError", False):
-                logger.debug(f"{server_name} rejected subscribe_notifications")
+                self.fancyLog.DEBUG(f"{server_name} rejected subscribe_notifications")
                 return
-            logger.info(f"Subscribed to server-side notifications from {server_name}")
+            self.fancyLog.INFO(f"Subscribed to server-side notifications from {server_name}")
         except Exception as e:
-            logger.debug(f"{server_name} does not expose subscribe_notifications: {e}")
+            self.fancyLog.DEBUG(f"{server_name} does not expose subscribe_notifications: {e}")
 
     async def _listen_to_server(self, server_url: str):
         """Listen for notifications from a specific server
@@ -189,7 +191,7 @@ class NotificationListener:
             server_url: The MCP server URL to listen to
         """
         server_name = self.server_connections[server_url]["name"]
-        logger.info(f"Starting notification listener for {server_name} at {server_url}")
+        self.fancyLog.INFO(f"Starting notification listener for {server_name} at {server_url}")
 
         while self.is_running:
             try:
@@ -206,7 +208,7 @@ class NotificationListener:
 
                         # Update connection status
                         self.server_connections[server_url]["active"] = True
-                        logger.info(f"Connected to {server_name} notification stream")
+                        self.fancyLog.INFO(f"Connected to {server_name} notification stream")
                         await self._subscribe_to_server_notifications(session, server_name)
 
                         try:
@@ -214,13 +216,13 @@ class NotificationListener:
                         except asyncio.CancelledError:
                             raise
                         except Exception as e:
-                            logger.debug(f"Notification stream error for {server_name}: {e}")
+                            self.fancyLog.DEBUG(f"Notification stream error for {server_name}: {e}")
 
             except asyncio.CancelledError:
                 self.server_connections[server_url]["active"] = False
                 raise
             except Exception as e:
-                logger.debug(f"Error in notification listener for {server_name}: {e}")
+                self.fancyLog.DEBUG(f"Error in notification listener for {server_name}: {e}")
                 self.server_connections[server_url]["active"] = False
 
                 # Exponential backoff before retry
@@ -233,7 +235,11 @@ class Yarp_mcpClient_BaseCore:
     tool management, and message processing. Subclasses should override template methods
     to customize behavior."""
 
-    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend, custom_prompt_file: str = None):
+    def __init__(self, input_mode: InputMode,
+                 llm_backend: LLMBackend,
+                 custom_prompt_file: str = None,
+                 logger: logging.Logger = logger,
+                 enableExplicitLogging: bool = True):
         self.input_mode = input_mode
         self.llm_backend = llm_backend
         self.custom_prompt_file = custom_prompt_file
@@ -245,6 +251,7 @@ class Yarp_mcpClient_BaseCore:
         self.system_prompt_addenda: Dict[str, str] = {}  # Maps server name to system prompt addendum
         self.available_tools = []
         self.system_prompt = ""  # Will be built dynamically after discovery
+        self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=enableExplicitLogging)
 
         # Notification infrastructure
         self.notification_dispatcher = NotificationDispatcher()
@@ -325,7 +332,7 @@ class Yarp_mcpClient_BaseCore:
         self.mcp_urls = {}
 
         if not YARP_AVAILABLE:
-            logger.warning("YARP not available for port discovery. Server discovery will fail.")
+            self.fancyLog.WARNING("YARP not available for port discovery. Server discovery will fail.")
             return
 
         try:
@@ -347,9 +354,9 @@ class Yarp_mcpClient_BaseCore:
                         # Store system prompt addendum if provided
                         if "system_prompt_addendum" in server_info:
                             self.system_prompt_addenda[server_name] = server_info["system_prompt_addendum"]
-                            logger.info(f"Received system prompt addendum from '{server_name}'")
+                            self.fancyLog.INFO(f"Received system prompt addendum from '{server_name}'")
                         else:
-                            logger.info(f"No system prompt addendum found for '{server_name}'")
+                            self.fancyLog.INFO(f"No system prompt addendum found for '{server_name}'")
 
                         descriptions = server_info.get("descriptions", {})
                         if descriptions:
@@ -357,20 +364,20 @@ class Yarp_mcpClient_BaseCore:
                             # Track which server each tool belongs to
                             for tool_name in descriptions.keys():
                                 self.tool_to_server[tool_name] = server_name
-                        logger.info(f"Discovered MCP server '{server_name}' at {server_info.get('url', 'unknown')} with {len(descriptions)} tools")
+                        self.fancyLog.INFO(f"Discovered MCP server '{server_name}' at {server_info.get('url', 'unknown')} with {len(descriptions)} tools")
 
                         # Add server to notification listener so we can receive notifications
                         if server_info.get("url"):
                             await self.notification_listener.add_server(server_info["url"], server_name)
                 except Exception as e:
-                    logger.debug(f"Could not query {port_name}: {e}")
+                    self.fancyLog.DEBUG(f"Could not query {port_name}: {e}")
 
         except Exception as e:
-            logger.warning(f"Error discovering MCP servers: {e}")
+            self.fancyLog.WARNING(f"Error discovering MCP servers: {e}")
 
         # No fallback - if discovery failed, we have no servers
         if not self.mcp_urls:
-            logger.warning("No MCP servers discovered. All server features will be unavailable.")
+            self.fancyLog.WARNING("No MCP servers discovered. All server features will be unavailable.")
 
     def _discover_mcp_ports(self) -> List[str]:
         """
@@ -392,7 +399,7 @@ class Yarp_mcpClient_BaseCore:
             )
 
             if result.returncode != 0:
-                logger.debug(f"yarp name list failed with return code {result.returncode}")
+                self.fancyLog.DEBUG(f"yarp name list failed with return code {result.returncode}")
                 return discovered_ports
 
             # Parse the output
@@ -412,12 +419,12 @@ class Yarp_mcpClient_BaseCore:
                             # Filter for MCP server info ports
                             if port_name.startswith("/mcp_server") and port_name.endswith("/info:o"):
                                 discovered_ports.append(port_name)
-                                logger.debug(f"Discovered MCP server port: {port_name}")
+                                self.fancyLog.DEBUG(f"Discovered MCP server port: {port_name}")
                     except Exception as e:
-                        logger.debug(f"Error parsing line: {line}, error: {e}")
+                        self.fancyLog.DEBUG(f"Error parsing line: {line}, error: {e}")
 
         except Exception as e:
-            logger.debug(f"Error discovering MCP ports: {e}")
+            self.fancyLog.DEBUG(f"Error discovering MCP ports: {e}")
 
         return discovered_ports
 
@@ -430,12 +437,12 @@ class Yarp_mcpClient_BaseCore:
             client_port_name = f"/mcp_client/discovery/{port_name.split('/')[-2]}:o"
 
             if not client_port.open(client_port_name):
-                logger.debug(f"Failed to open client port {client_port_name}")
+                self.fancyLog.DEBUG(f"Failed to open client port {client_port_name}")
                 return {}
 
             # Connect to server port
             if not yarp.Network.connect(client_port_name, port_name):
-                logger.debug(f"Failed to connect to {port_name}")
+                self.fancyLog.DEBUG(f"Failed to connect to {port_name}")
                 client_port.close()
                 return {}
 
@@ -496,16 +503,16 @@ class Yarp_mcpClient_BaseCore:
                                 }
 
                             server_info["descriptions"] = descriptions
-                            logger.debug(f"Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session")
+                            self.fancyLog.DEBUG(f"Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session")
                             print(f"{Colors.OKGREEN}✅ Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session{Colors.ENDC}")
 
                 except Exception as e:
-                    logger.debug(f"Error querying tools via MCP client session for {server_info.get('name', 'unknown')}: {e}")
+                    self.fancyLog.DEBUG(f"Error querying tools via MCP client session for {server_info.get('name', 'unknown')}: {e}")
 
             return server_info
 
         except Exception as e:
-            logger.debug(f"Error querying {port_name}: {e}")
+            self.fancyLog.DEBUG(f"Error querying {port_name}: {e}")
             import traceback
             traceback.print_exc()
             return {}
@@ -515,15 +522,12 @@ class Yarp_mcpClient_BaseCore:
         try:
             with open(self.custom_prompt_file, 'r', encoding='utf-8') as f:
                 self.custom_prompt_text = f.read().strip()
-                logger.info(f"Loaded custom prompt from {self.custom_prompt_file} ({len(self.custom_prompt_text)} chars)")
-                print(f"{Colors.OKGREEN}✅ Loaded custom prompt from {self.custom_prompt_file}{Colors.ENDC}")
+                self.fancyLog.INFO(f"Loaded custom prompt from {self.custom_prompt_file} ({len(self.custom_prompt_text)} chars)")
         except FileNotFoundError:
-            logger.error(f"Custom prompt file not found: {self.custom_prompt_file}")
-            print(f"{Colors.FAIL}❌ Custom prompt file not found: {self.custom_prompt_file}{Colors.ENDC}")
+            self.fancyLog.ERROR(f"Custom prompt file not found: {self.custom_prompt_file}")
             self.custom_prompt_text = None
         except Exception as e:
-            logger.error(f"Error loading custom prompt file: {e}")
-            print(f"{Colors.FAIL}❌ Error loading custom prompt file: {e}{Colors.ENDC}")
+            self.fancyLog.ERROR(f"Error loading custom prompt file: {e}")
             self.custom_prompt_text = None
 
     def _define_tool_parameters(self) -> Dict[str, Dict]:
@@ -628,15 +632,15 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
 
         # Add system prompt addenda from servers
         if self.system_prompt_addenda:
-            logger.info(f"Adding {len(self.system_prompt_addenda)} system prompt addenda to prompt")
+            self.fancyLog.INFO(f"Adding {len(self.system_prompt_addenda)} system prompt addenda to prompt")
             prompt += "\n\n" + "="*80 + "\n"
             prompt += "ADDITIONAL REQUIREMENTS FROM CONNECTED SERVERS:\n"
             prompt += "="*80 + "\n"
             for server_name, addendum in self.system_prompt_addenda.items():
-                logger.info(f"Including addendum from server: {server_name}")
+                self.fancyLog.INFO(f"Including addendum from server: {server_name}")
                 prompt += f"\n[From {server_name.upper()} Server]:\n{addendum}\n"
         else:
-            logger.info("No system prompt addenda found from servers")
+            self.fancyLog.INFO("No system prompt addenda found from servers")
 
         return prompt
 
@@ -648,7 +652,7 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
         tools = []
 
         if not self.tool_descriptions_cache:
-            logger.warning("No tool descriptions in cache. Tools may not be available.")
+            self.fancyLog.WARNING("No tool descriptions in cache. Tools may not be available.")
             return tools
 
         for tool_name, tool_info in self.tool_descriptions_cache.items():
@@ -736,10 +740,10 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
 
             try:
                 # Log what we're sending to the LLM
-                logger.info(f"Sending {len(messages)} messages to LLM (including system prompt: {any(m.get('role') == 'system' for m in messages)})")
+                self.fancyLog.INFO(f"Sending {len(messages)} messages to LLM (including system prompt: {any(m.get('role') == 'system' for m in messages)})")
                 if any(m.get('role') == 'system' for m in messages):
                     sys_msg = next(m for m in messages if m.get('role') == 'system')
-                    logger.debug(f"System prompt being sent ({len(sys_msg['content'])} chars)")
+                    self.fancyLog.DEBUG(f"System prompt being sent ({len(sys_msg['content'])} chars)")
 
                 # Call LLM backend
                 response = await self.llm_backend.chat_completion(
@@ -830,9 +834,9 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
 
         # Build system prompt dynamically from discovered tools
         self.system_prompt = self._build_system_prompt()
-        logger.info(f"System prompt built. Length: {len(self.system_prompt)} chars")
-        logger.info(f"System prompt addenda count: {len(self.system_prompt_addenda)}")
-        logger.debug(f"System prompt: {self.system_prompt[:300]}...")
+        self.fancyLog.INFO(f"System prompt built. Length: {len(self.system_prompt)} chars")
+        self.fancyLog.INFO(f"System prompt addenda count: {len(self.system_prompt_addenda)}")
+        self.fancyLog.DEBUG(f"System prompt: {self.system_prompt[:300]}...")
 
         # Print system prompt for debugging
         print(f"\n{Colors.OKBLUE}{'='*80}")
