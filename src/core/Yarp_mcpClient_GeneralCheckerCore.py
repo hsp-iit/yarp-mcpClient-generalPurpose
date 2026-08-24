@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
     """YARP MCP client core with background monitoring and checking capabilities."""
 
-    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend):
+    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend, enableExplicitLogging: bool = True):
         """Initialize the checker core client with monitoring support.
 
         Args:
             input_mode: Input mode for getting user input
             llm_backend: LLM backend for chat completion
         """
-        Yarp_mcpClient_BaseCore.__init__(self,input_mode, llm_backend, custom_prompt_file=None)
+        Yarp_mcpClient_BaseCore.__init__(self,input_mode, llm_backend, custom_prompt_file=None, logger=logger, enableExplicitLogging=enableExplicitLogging)
 
         # Initialize background task manager
         self.task_manager = BackgroundTaskManager()
@@ -56,7 +56,7 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
             try:
                 await self.input_mode.send_notification(message)
             except Exception as e:
-                logger.warning(f"Could not send notification through input mode: {e}")
+                self.fancyLog.WARNING(f"Could not send notification through input mode: {e}")
 
         # Invoke the LLM to respond to the notification
         # Let process_user_message add a user message to trigger LLM response
@@ -65,7 +65,7 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
             if response and response.strip():
                 await self.input_mode.send_response(response)
         except Exception as e:
-            logger.error(f"Error generating response to task completion: {e}")
+            self.fancyLog.ERROR(f"Error generating response to task completion: {e}")
 
     async def _track_server_side_task(self, fn_name: str, result: Dict[str, Any]):
         """Create a local shadow task for server-side MCP task notifications."""
