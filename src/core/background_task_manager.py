@@ -7,6 +7,8 @@ from datetime import datetime
 from threading import Lock
 from dataclasses import dataclass, field
 
+from ..utils.fancyLogging import FancyLogger
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,11 +39,12 @@ class MonitoringTask:
 class BackgroundTaskManager:
     """Tracks server-side MCP tasks and completes them from task notifications."""
 
-    def __init__(self):
+    def __init__(self, enableExplicitLogging: bool = True):
         """Initialize the notification-backed task manager."""
         self.tasks: Dict[str, MonitoringTask] = {}
         self.task_lock = Lock()
         self.completion_callbacks: List[Callable] = []
+        self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=enableExplicitLogging)
 
     def register_completion_callback(self, callback: Callable):
         """Register a callback for task completion events.
@@ -115,7 +118,7 @@ class BackgroundTaskManager:
                         f"🔔 Monitoring task {task.task_id} condition met via MCP notification! "
                         f"Result: {json.dumps(data, indent=2)}"
                     )
-                    logger.info(message)
+                    self.fancyLog.INFO(message)
                     notifications_to_send.append((task.task_id, task, message))
 
         for completed_task_id, completed_task, message in notifications_to_send:
@@ -307,7 +310,7 @@ class BackgroundTaskManager:
             eval_result = bool(eval(condition, {"__builtins__": {}}, eval_env))
             return eval_result
         except Exception as e:
-            logger.warning(f"Error evaluating condition '{condition}': {e}")
+            self.fancyLog.WARNING(f"Error evaluating condition '{condition}': {e}")
             return False
 
 
@@ -326,7 +329,7 @@ class BackgroundTaskManager:
                 else:
                     callback(task_id, task, message)
             except Exception as e:
-                # logger.error(f"Error in notification callback: {e}")
+                self.fancyLog.ERROR(f"Error in notification callback: {e}")
                 pass
 
     async def cleanup(self):
