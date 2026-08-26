@@ -67,63 +67,15 @@ class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
         except Exception as e:
             self.fancyLog.ERROR(f"Error generating response to task completion: {e}")
 
-    async def _track_server_side_task(self, fn_name: str, result: Dict[str, Any]):
-        """Create a local shadow task for server-side MCP task notifications."""
-        if not result.get("success") or not result.get("task_id"):
-            return
-
-        task_id = result["task_id"]
-        server_name = self.tool_to_server.get(fn_name)
-        server_url = self.mcp_urls.get(server_name, "") if server_name else ""
-
-        if fn_name in {
-            "goto_target_by_absolute_location",
-            "goto_target_by_relative_location",
-            "follow_path",
-        }:
-            await self.task_manager.track_external_task(
-                task_id=task_id,
-                target_tool="get_navigation_status",
-                condition="status == 'goal_reached' or status in ['aborted', 'failing', 'error']",
-                server_url=server_url,
-                timeout=300.0,
-            )
-        elif fn_name == "start_battery_charge_monitor":
-            await self.task_manager.track_external_task(
-                task_id=task_id,
-                target_tool="get_battery_charge",
-                condition=result.get("condition", "True"),
-                server_url=server_url,
-                timeout=0.0,
-            )
-
     def _get_system_prompt_additions(self) -> str:
         """Get additional text to add to system prompt for monitoring capabilities."""
 
         prompt_additions = """
-When using YARP tools:
-1. Use function calls for actual operations - do NOT generate fake JSON or mock responses
-2. Describe what you're doing in plain English alongside the function calls
-3. For tools that return a task_id, server-side MCP notifications will update the tracked task state
-4. Be helpful and conversational while executing YARP tools
-5. Multiple server-side tasks can run simultaneously in the background
-6. Users can ask "what's the status?" at any time and you can check with get_monitoring_status()"""
-
-        if monitoring_tools:
-            prompt_additions += f"""
-
-**Server-Side Task Notifications** (available for {len(monitoring_tools)} tools):
-Some tools return a task_id and continue running on the MCP server. Those tasks are tracked locally from MCP notifications.
-- `get_monitoring_status(task_id)` - Check status of a tracked server-side task
-- `list_monitoring_tasks()` - List all tracked server-side tasks
-
-Examples:
-- User: "Let me know when navigation is complete"
-  → Call a navigation tool and keep the returned task_id for status checks
-- User: "Wait until battery is below 20%"
-  → Call the server-side battery monitoring tool and keep the returned task_id
-
-The server will notify this client when the task reaches a terminal state."""
+Additional rules for this client:
+1. For tools that return a task_id, server-side MCP notifications will update the tracked task state
+2. Be helpful and conversational while executing YARP tools
+3. Multiple server-side tasks can run simultaneously in the background
+4. Users can ask "what's the status?" at any time and you can check with get_monitoring_status()"""
 
         return prompt_additions
 
@@ -170,6 +122,8 @@ The server will notify this client when the task reaches a terminal state."""
         """Handle a tool call, with special handling for monitoring tasks."""
         fn_name = tool_call.function.name
         fn_args = json.loads(tool_call.function.arguments)
+
+        self.fancyLog.INFO(f"Handling tool call: {fn_name} with args: {fn_args}")
 
         # Handle special background monitoring tools
         if fn_name == "get_monitoring_status":
@@ -219,8 +173,9 @@ The server will notify this client when the task reaches a terminal state."""
 
         else:
             # For regular tools, use parent's implementation
+            self.fancyLog.INFO(f"Delegating tool call '{fn_name}' to base core handler.")
             result = await super()._handle_tool_call(tool_call)
-            await self._track_server_side_task(fn_name, result)
+            # await self._track_server_side_task(fn_name, result)
             return result
 
     async def _run_loop_cleanup(self):

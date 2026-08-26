@@ -105,6 +105,7 @@ class NotificationListener:
         self.listener_tasks: Dict[str, asyncio.Task] = {}  # server_url -> task
         self.is_running = False
         self.lock = asyncio.Lock()
+        self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=True)
 
     async def add_server(self, server_url: str, server_name: str):
         """Add a server to listen for notifications
@@ -280,7 +281,9 @@ class Yarp_mcpClient_BaseCore:
                     "success": False,
                     "error": "No MCP servers available"
                 }
-
+        self.fancyLog.INFO("")
+        self.fancyLog.INFO(f"Calling MCP tool '{tool_name}' on server {server_url} with args: {args}")
+        self.fancyLog.INFO("")
         try:
             async with streamablehttp_client(server_url) as (read_stream, write_stream, get_session_id):
                 async with ClientSession(read_stream, write_stream) as session:
@@ -354,7 +357,7 @@ class Yarp_mcpClient_BaseCore:
                         # Store system prompt addendum if provided
                         if "system_prompt_addendum" in server_info:
                             self.system_prompt_addenda[server_name] = server_info["system_prompt_addendum"]
-                            self.fancyLog.INFO(f"Received system prompt addendum from '{server_name}'")
+                            self.fancyLog.INFO(f"Received system prompt addendum from '{server_name}': {server_info['system_prompt_addendum'][:100]}...")
                         else:
                             self.fancyLog.INFO(f"No system prompt addendum found for '{server_name}'")
 
@@ -471,9 +474,11 @@ class Yarp_mcpClient_BaseCore:
             cmd.addString("get_system_prompt_addendum")
             if client_port.write(cmd, reply):
                 if reply.size() > 0:
-                    reply_str = reply.get(0).asString()
+                    reply_str = ""
+                    for sc in range(reply.size()):
+                        reply_str += reply.get(sc).asString()
                     if reply_str and reply_str.lower() != "not_implemented":
-                        server_info["system_prompt_addendum"] = reply.get(0).asString()
+                        server_info["system_prompt_addendum"] = reply_str
 
             client_port.close()
 
