@@ -34,9 +34,9 @@ Options:
                              remote: Azure OpenAI
                              local: Local Ollama instance
 
-  --core {standard,checker}  Client core type (default: standard)
-                             standard: Basic MCP client without background monitoring
-                             checker: Advanced client with background task monitoring
+  --core {standard,checker}  Client core type (default: checker)
+                             standard: Basic MCP client without operation tracking
+                             checker: MCP operation-resource tracking and completion updates
 
   --yarp-port PORT          YARP port name for yarp mode (default: /mcp_client/input:i)
   --ollama-url URL          Ollama API URL (default: http://localhost:11434)
@@ -58,8 +58,6 @@ import sys
 import argparse
 from typing import List, Dict, Any, Optional
 
-from mcp.client.streamable_http import streamablehttp_client
-from mcp import ClientSession
 
 from src.input_modes.input_mode_chat import ChatInputMode
 from src.input_modes.input_mode_yarp import YarpInputMode
@@ -123,8 +121,8 @@ Examples:
     parser.add_argument(
         "--core",
         choices=["standard", "checker"],
-        default="standard",
-        help="Client core type: standard (basic MCP client) or checker (with background task monitoring)"
+        default="checker",
+        help="Client core type: checker (operation tracking) or standard (basic MCP client)"
     )
 
     parser.add_argument(
@@ -206,7 +204,7 @@ async def main():
     # Select the appropriate client core based on user choice
     if args.core == "checker":
         client = Yarp_mcpClient_GeneralCheckerCore(input_mode=input_mode, llm_backend=llm_backend)
-        print(f"{Colors.OKBLUE}Using CheckerCore with background monitoring capabilities{Colors.ENDC}\n")
+        print(f"{Colors.OKBLUE}Using CheckerCore with operation tracking{Colors.ENDC}\n")
     else:
         client = Yarp_mcpClient_GeneralCore(input_mode=input_mode, llm_backend=llm_backend, custom_prompt_file=args.custom_prompt_file)
         print(f"{Colors.OKBLUE}Using Standard Core{Colors.ENDC}\n")
