@@ -1,184 +1,206 @@
+"""General-purpose client with MCP operation-resource tracking."""
+
+import asyncio
 import json
 import logging
-from typing import Dict, Any, List
-from ..llm_backends.llm_backend_base import LLMBackend
+from typing import Any, Dict, List
+
 from ..input_modes.input_mode_base import InputMode
-from .background_task_manager import BackgroundTaskManager
-from .Yarp_mcpClient_BaseCore import Yarp_mcpClient_BaseCore, Colors
+from ..llm_backends.llm_backend_base import LLMBackend
+from .background_task_manager import BackgroundTaskManager, TrackedOperation
+from .Yarp_mcpClient_BaseCore import Colors, Yarp_mcpClient_BaseCore
 
 logger = logging.getLogger(__name__)
 
 
 class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
-    """YARP MCP client core with background monitoring and checking capabilities."""
+    """YARP MCP client that tracks long-running server operations."""
 
-    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend, enableExplicitLogging: bool = True):
-        """Initialize the checker core client with monitoring support.
-
-        Args:
-            input_mode: Input mode for getting user input
-            llm_backend: LLM backend for chat completion
-        """
-        Yarp_mcpClient_BaseCore.__init__(self,input_mode, llm_backend, custom_prompt_file=None, logger=logger, enableExplicitLogging=enableExplicitLogging)
-
-        # Initialize background task manager
+    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend,
+                 enableExplicitLogging: bool = True):
+        super().__init__(
+            input_mode, llm_backend, custom_prompt_file=None, logger=logger,
+            enableExplicitLogging=enableExplicitLogging,
+        )
         self.task_manager = BackgroundTaskManager()
-        self.task_manager.register_completion_callback(self._on_task_completion)
-        self.notification_dispatcher.register_handler("*", self.task_manager.handle_notification)
+        self.task_manager.register_completion_callback(self._on_operation_completion)
+        self._operation_events: asyncio.Queue[tuple[TrackedOperation, str] | None] = asyncio.Queue()
+        self._operation_event_worker: asyncio.Task[Any] | None = None
 
-    async def _on_task_completion(self, task_id: str, task, message: str):
-        """Callback when a background monitoring task completes
+    async def _on_operation_completion(
+        self, operation_id: str, operation: TrackedOperation, message: str,
+    ) -> None:
+        """Queue completion delivery so a watcher never re-enters the LLM loop."""
+        await self._operation_events.put((operation, message))
 
-        Args:
-            task_id: ID of the completed task
-            task: The MonitoringTask object
-            message: Completion message
-        """
-        # Add a system message to conversation history to notify the user
-        notification = {
-            "role": "system",
-            "content": f"[BACKGROUND TASK COMPLETED] {message}"
-        }
-        self.conversation_history.append(notification)
-
-        # Print prominent notification to terminal
-        print(f"\n{Colors.OKGREEN}{'='*80}")
-        print(f"🔔 SERVER-SIDE TASK COMPLETED")
-        print(f"{'='*80}")
-        print(f"{message}")
-        print(f"{'='*80}{Colors.ENDC}\n")
-
-        # System bell/alert
-        print("\a", end="", flush=True)
-
-        # If input mode supports notifications, send through there
-        if hasattr(self.input_mode, 'send_notification'):
+    async def _deliver_operation_events(self) -> None:
+        while True:
+            event = await self._operation_events.get()
             try:
-                await self.input_mode.send_notification(message)
-            except Exception as e:
-                self.fancyLog.WARNING(f"Could not send notification through input mode: {e}")
+                if event is None:
+                    return
+                operation, message = event
+                notification = (
+                    f"Operation {operation.operation_id} on {operation.server_name} "
+                    f"finished with status '{operation.status}'."
+                )
+                self.conversation_history.append({
+                    "role": "system",
+                    "content": f"[SERVER OPERATION UPDATE] {message}",
+                })
+                print(f"\n{Colors.OKGREEN}{'=' * 80}")
+                print("SERVER OPERATION FINISHED")
+                print(f"{'=' * 80}\n{message}\n{'=' * 80}{Colors.ENDC}\n")
+                async with self._response_lock:
+                    await self.input_mode.send_notification(notification)
 
-        # Invoke the LLM to respond to the notification
-        # Let process_user_message add a user message to trigger LLM response
-        try:
-            response = await self.process_user_message("[A background monitoring task has completed. Please acknowledge and summarize the result for the user.]")
-            if response and response.strip():
-                await self.input_mode.send_response(response)
-        except Exception as e:
-            self.fancyLog.ERROR(f"Error generating response to task completion: {e}")
+                # Resume the original request through the normal tool-calling
+                # loop. The conversation lock prevents this background trigger
+                # from racing a user-initiated LLM turn.
+                continuation_request = (
+                    "A tracked server operation has reached a terminal state. "
+                    "Continue the user's pending request now: perform any action "
+                    "they asked to happen at this condition, using tools when needed. "
+                    "If no deferred action was requested, briefly acknowledge the result. "
+                    f"Authoritative operation snapshot: {message}"
+                )
+                async with self._conversation_lock:
+                    response = await self.process_user_message(continuation_request)
+                if response and response.strip():
+                    async with self._response_lock:
+                        await self.input_mode.send_response(response)
+            except Exception as exc:
+                self.fancyLog.ERROR(f"Could not deliver operation completion: {exc}")
+            finally:
+                self._operation_events.task_done()
 
     def _get_system_prompt_additions(self) -> str:
-        """Get additional text to add to system prompt for monitoring capabilities."""
-
-        prompt_additions = """
+        return """
 Additional rules for this client:
-1. For tools that return a task_id, server-side MCP notifications will update the tracked task state
-2. Be helpful and conversational while executing YARP tools
-3. Multiple server-side tasks can run simultaneously in the background
-4. Users can ask "what's the status?" at any time and you can check with get_monitoring_status()"""
-
-        return prompt_additions
+1. Long-running tools return an operation_id and status_uri and are tracked automatically.
+2. Use get_tracked_operation for one exact operation and list_tracked_operations for a summary.
+3. Several operations can run concurrently; identify them by operation_id, never by tool name alone.
+4. Use cancel_tracked_operation when the user asks to interrupt tracked work.
+5. A completion update is authoritative only after the client reads the operation resource.
+6. Be helpful and conversational while executing YARP tools."""
 
     def get_available_tools(self) -> List[Dict[str, Any]]:
-        """Build tools dynamically from discovered tool descriptions, adding monitoring tools."""
-        # Get base tools from parent
         tools = super().get_available_tools()
-
-        # Add special background monitoring tools
         tools.extend([
             {
                 "type": "function",
                 "function": {
-                    "name": "get_monitoring_status",
-                    "description": "Check the status of a background monitoring task.",
+                    "name": "get_tracked_operation",
+                    "description": "Return the latest snapshot for one tracked server operation.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "task_id": {
+                            "operation_id": {
                                 "type": "string",
-                                "description": "ID of a tracked server-side task returned by an MCP tool"
+                                "description": "Exact operation ID returned by a long-running tool",
                             }
                         },
-                        "required": ["task_id"]
-                    }
-                }
+                        "required": ["operation_id"],
+                    },
+                },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "list_monitoring_tasks",
-                    "description": "List all active background monitoring tasks and their status.",
+                    "name": "list_tracked_operations",
+                    "description": "List all operations tracked during this client session.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "cancel_tracked_operation",
+                    "description": (
+                        "Cancel one exact tracked operation on its owning server. "
+                        "For navigation this also requests that the robot stop."
+                    ),
                     "parameters": {
                         "type": "object",
-                        "properties": {}
-                    }
-                }
-            }
+                        "properties": {
+                            "operation_id": {
+                                "type": "string",
+                                "description": "Exact operation ID to cancel",
+                            }
+                        },
+                        "required": ["operation_id"],
+                    },
+                },
+            },
         ])
-
         return tools
 
     async def _handle_tool_call(self, tool_call: Any) -> Dict[str, Any]:
-        """Handle a tool call, with special handling for monitoring tasks."""
         fn_name = tool_call.function.name
         fn_args = json.loads(tool_call.function.arguments)
 
-        self.fancyLog.INFO(f"Handling tool call: {fn_name} with args: {fn_args}")
+        if fn_name == "get_tracked_operation":
+            return await self.task_manager.get_operation(fn_args.get("operation_id", ""))
+        if fn_name == "list_tracked_operations":
+            return await self.task_manager.list_operations()
+        if fn_name == "cancel_tracked_operation":
+            operation_id = fn_args.get("operation_id", "")
+            tracked = await self.task_manager.get_operation(operation_id)
+            if not tracked.get("success"):
+                return tracked
+            server_name = tracked["server_name"]
+            server_url = self.mcp_urls.get(server_name)
+            if not server_url:
+                return {
+                    "success": False,
+                    "error": f"Server {server_name} is not connected",
+                }
+            return await self.call_mcp_tool(
+                "cancel_operation", {"operation_id": operation_id}, server_url,
+            )
 
-        # Handle special background monitoring tools
-        if fn_name == "get_monitoring_status":
-            task_id = fn_args.get("task_id")
-            result = await self.task_manager.get_task_status(task_id)
-
-            # Print feedback about monitoring status check
-            if result.get("success"):
-                status = result.get("status")
-                print(f"\n{Colors.OKCYAN}📊 Monitoring Status:{Colors.ENDC}")
-                print(f"   Task ID:        {result.get('task_id')}")
-                print(f"   Status:         {status}")
-                print(f"   Target Tool:    {result.get('target_tool')}")
-                print(f"   Condition:      {result.get('condition')}")
-                print(f"   Elapsed:        {result.get('elapsed_time', 0):.1f}s")
-                print(f"   Timeout:        {result.get('timeout')}s")
-                if result.get('last_result'):
-                    print(f"   Last Result:    {json.dumps(result.get('last_result'), indent=18)}")
-                print()
-            elif result.get("error"):
-                error_msg = result.get("error", "Unknown error")
-                print(f"\n{Colors.FAIL}❌ {error_msg}{Colors.ENDC}\n")
-
+        result = await super()._handle_tool_call(tool_call)
+        if not result.get("success"):
             return result
 
-        elif fn_name == "list_monitoring_tasks":
-            result = await self.task_manager.list_tasks()
-
-            # Print feedback about active monitoring tasks
-            tasks = result.get("tasks", [])
-            if tasks:
-                print(f"\n{Colors.OKCYAN}{'='*80}")
-                print(f"📋 ACTIVE MONITORING TASKS ({len(tasks)} total)")
-                print(f"{'='*80}{Colors.ENDC}")
-                for i, task in enumerate(tasks, 1):
-                    print(f"\n  Task {i}:")
-                    print(f"    ID:         {task.get('task_id')}")
-                    print(f"    Tool:       {task.get('target_tool')}")
-                    print(f"    Condition:  {task.get('condition')}")
-                    print(f"    Status:     {task.get('status')}")
-                    print(f"    Elapsed:    {task.get('elapsed_time', 0):.1f}s / {task.get('timeout')}s")
-                print(f"\n{Colors.OKCYAN}{'='*80}{Colors.ENDC}\n")
-            else:
-                print(f"\n{Colors.OKCYAN}📋 No active monitoring tasks{Colors.ENDC}\n")
-
+        operation_id = result.get("operation_id")
+        status_uri = result.get("status_uri")
+        if not operation_id or not status_uri:
             return result
 
-        else:
-            # For regular tools, use parent's implementation
-            self.fancyLog.INFO(f"Delegating tool call '{fn_name}' to base core handler.")
-            result = await super()._handle_tool_call(tool_call)
-            # await self._track_server_side_task(fn_name, result)
+        server_name = self.tool_to_server.get(fn_name)
+        server_url = self.mcp_urls.get(server_name, "") if server_name else ""
+        if not server_url:
+            result["tracking"] = {
+                "success": False,
+                "error": f"Cannot identify the server for operation {operation_id}",
+            }
             return result
 
-    async def _run_loop_cleanup(self):
-        """Cleanup hook to stop background tasks."""
-        # Cleanup background task manager
+        result["tracking"] = await self.task_manager.track_operation(
+            operation_id=str(operation_id),
+            operation_type=str(result.get("operation_type", fn_name)),
+            status_uri=str(status_uri),
+            server_name=server_name,
+            server_url=server_url,
+            client=self.mcp_clients.get(server_url),
+            poll_interval_ms=int(result.get("poll_interval_ms", 1000)),
+        )
+        if result["tracking"].get("success"):
+            print(
+                f"{Colors.OKCYAN}Tracking server operation {operation_id} "
+                f"at {status_uri}{Colors.ENDC}"
+            )
+        return result
+
+    async def _run_loop_setup(self) -> None:
+        self._operation_event_worker = asyncio.create_task(
+            self._deliver_operation_events(), name="deliver-yarp-operation-events",
+        )
+
+    async def _run_loop_cleanup(self) -> None:
         await self.task_manager.cleanup()
+        await self._operation_events.put(None)
+        if self._operation_event_worker is not None:
+            await self._operation_event_worker
+            self._operation_event_worker = None

@@ -1,13 +1,10 @@
 import json
-from typing import List, Dict, Any, Optional, Callable
-from mcp.client.streamable_http import streamablehttp_client
-from mcp import ClientSession
-from pydantic import RootModel
+from contextlib import AsyncExitStack
+from typing import List, Dict, Any
+from mcp import Client
 import asyncio
 import logging
 import subprocess
-import threading
-from collections import defaultdict
 from ..llm_backends.llm_backend_base import LLMBackend
 from ..input_modes.input_mode_base import InputMode
 from ..utils.fancyLogging import FancyLogger
@@ -23,23 +20,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class _AnyServerNotification(RootModel[Any]):
-    """Accept any JSON-RPC notification so custom server methods can be dispatched.
-
-    The MCP Python SDK validates incoming notifications against the standard
-    ServerNotification union. That is correct for strict MCP primitives, but our
-    servers may also emit domain-specific notifications while they are being
-    migrated to the official task notification shape.
-    """
-
-
-class NotificationClientSession(ClientSession):
-    """ClientSession variant used only by the passive notification listener."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._receive_notification_type = _AnyServerNotification
-
 # Color codes for terminal output
 class Colors:
     HEADER = '\033[95m'
@@ -53,182 +33,43 @@ class Colors:
     UNDERLINE = '\033[4m'
 
 
-class NotificationDispatcher:
-    """Manages notification handlers and dispatches incoming notifications"""
+class MCPClientManager:
+    """Own one SDK v2 Client lifecycle per discovered server URL."""
 
-    def __init__(self, enableExplicitLogging: bool = True):
-        # Maps notification method to list of handlers
-        # Format: "method_name" -> [callable, callable, ...]
-        self.handlers: Dict[str, List[Callable]] = defaultdict(list)
-        self.lock = asyncio.Lock()
-        self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=enableExplicitLogging)
+    def __init__(self, read_timeout_seconds: float = 30.0) -> None:
+        self._server_names: Dict[str, str] = {}
+        self._clients: Dict[str, Client] = {}
+        self._stack: AsyncExitStack | None = None
+        self._read_timeout_seconds = read_timeout_seconds
 
-    def register_handler(self, notification_method: str, handler: Callable):
-        """Register a handler for a specific notification method
+    def add_server(self, server_url: str, server_name: str) -> None:
+        self._server_names[server_url] = server_name
 
-        Args:
-            notification_method: The MCP notification method (e.g., "notifications/tasks/status")
-                                 or "*" to receive all notifications.
-            handler: Callable that takes (notification_method: str, params: dict) -> None
-        """
-        self.handlers[notification_method].append(handler)
-
-    async def dispatch(self, notification_method: str, params: Optional[Dict[str, Any]] = None):
-        """Dispatch a notification to all registered handlers
-
-        Args:
-            notification_method: The notification method name
-            params: Optional parameters from the notification
-        """
-        params = params or {}
-        async with self.lock:
-            handlers = [
-                *self.handlers.get(notification_method, []),
-                *self.handlers.get("*", []),
-            ]
-
-        for handler in handlers:
-            try:
-                result = handler(notification_method, params)
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception as e:
-                self.fancyLog.ERROR(f"Error in notification handler for {notification_method}: {e}")
-
-
-class NotificationListener:
-    """Maintains connections to MCP servers and listens for notifications"""
-
-    def __init__(self, dispatcher: NotificationDispatcher):
-        self.dispatcher = dispatcher
-        self.server_connections: Dict[str, Any] = {}  # server_url -> connection info
-        self.listener_tasks: Dict[str, asyncio.Task] = {}  # server_url -> task
-        self.is_running = False
-        self.lock = asyncio.Lock()
-        self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=True)
-
-    async def add_server(self, server_url: str, server_name: str):
-        """Add a server to listen for notifications
-
-        Args:
-            server_url: The MCP server URL
-            server_name: Human-readable server name
-        """
-        async with self.lock:
-            if server_url not in self.server_connections:
-                self.server_connections[server_url] = {"name": server_name, "active": False}
-                if self.is_running:
-                    # Start listening to this server immediately if listener is already running
-                    task = asyncio.create_task(self._listen_to_server(server_url))
-                    self.listener_tasks[server_url] = task
-
-    async def start(self):
-        """Start listening to all registered servers for notifications"""
-        async with self.lock:
-            self.is_running = True
-            for server_url in self.server_connections.keys():
-                if server_url not in self.listener_tasks:
-                    task = asyncio.create_task(self._listen_to_server(server_url))
-                    self.listener_tasks[server_url] = task
-
-    async def stop(self):
-        """Stop all notification listeners"""
-        async with self.lock:
-            self.is_running = False
-            tasks = list(self.listener_tasks.values())
-            for task in tasks:
-                task.cancel()
-            self.listener_tasks.clear()
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _handle_session_message(self, server_url: str, server_name: str, message: Any):
-        """Extract and dispatch notifications delivered by ClientSession."""
-        if isinstance(message, Exception):
-            self.fancyLog.DEBUG(f"Notification listener received exception from {server_name}: {message}")
+    async def start(self) -> None:
+        if self._stack is not None:
             return
-
-        notification = getattr(message, "root", None)
-        if notification is None:
-            return
-
-        if isinstance(notification, dict):
-            method = notification.get("method")
-            params = notification.get("params") or {}
-        else:
-            method = getattr(notification, "method", None)
-            params = getattr(notification, "params", {}) or {}
-
-        if not method:
-            return
-
-        if hasattr(params, "model_dump"):
-            params = params.model_dump(by_alias=True, mode="json", exclude_none=True)
-        elif not isinstance(params, dict):
-            params = {"value": params}
-
-        params = dict(params)
-        params.setdefault("_server_url", server_url)
-        params.setdefault("_server_name", server_name)
-
-        await self.dispatcher.dispatch(method, params)
-
-    async def _subscribe_to_server_notifications(self, session: ClientSession, server_name: str):
-        """Ask servers that support it to broadcast task notifications to this session."""
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
         try:
-            result = await session.call_tool("subscribe_notifications", {})
-            if getattr(result, "isError", False):
-                self.fancyLog.DEBUG(f"{server_name} rejected subscribe_notifications")
-                return
-            self.fancyLog.INFO(f"Subscribed to server-side notifications from {server_name}")
-        except Exception as e:
-            self.fancyLog.DEBUG(f"{server_name} does not expose subscribe_notifications: {e}")
+            for server_url in self._server_names:
+                self._clients[server_url] = await self._stack.enter_async_context(
+                    Client(server_url, read_timeout_seconds=self._read_timeout_seconds)
+                )
+        except Exception:
+            await self.stop()
+            raise
 
-    async def _listen_to_server(self, server_url: str):
-        """Listen for notifications from a specific server
+    def get(self, server_url: str) -> Client:
+        try:
+            return self._clients[server_url]
+        except KeyError as exc:
+            raise RuntimeError(f"No active MCP client for {server_url}") from exc
 
-        Args:
-            server_url: The MCP server URL to listen to
-        """
-        server_name = self.server_connections[server_url]["name"]
-        self.fancyLog.INFO(f"Starting notification listener for {server_name} at {server_url}")
-
-        while self.is_running:
-            try:
-                async def message_handler(message: Any):
-                    await self._handle_session_message(server_url, server_name, message)
-
-                async with streamablehttp_client(server_url) as (read_stream, write_stream, get_session_id):
-                    async with NotificationClientSession(
-                        read_stream,
-                        write_stream,
-                        message_handler=message_handler,
-                    ) as session:
-                        await session.initialize()
-
-                        # Update connection status
-                        self.server_connections[server_url]["active"] = True
-                        self.fancyLog.INFO(f"Connected to {server_name} notification stream")
-                        await self._subscribe_to_server_notifications(session, server_name)
-
-                        try:
-                            await asyncio.sleep(float('inf'))
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as e:
-                            self.fancyLog.DEBUG(f"Notification stream error for {server_name}: {e}")
-
-            except asyncio.CancelledError:
-                self.server_connections[server_url]["active"] = False
-                raise
-            except Exception as e:
-                self.fancyLog.DEBUG(f"Error in notification listener for {server_name}: {e}")
-                self.server_connections[server_url]["active"] = False
-
-                # Exponential backoff before retry
-                if self.is_running:
-                    await asyncio.sleep(5)
+    async def stop(self) -> None:
+        stack, self._stack = self._stack, None
+        self._clients.clear()
+        if stack is not None:
+            await stack.aclose()
 
 
 class Yarp_mcpClient_BaseCore:
@@ -254,9 +95,9 @@ class Yarp_mcpClient_BaseCore:
         self.system_prompt = ""  # Will be built dynamically after discovery
         self.fancyLog = FancyLogger(self.__class__.__name__,logger=logger, enableExplicitLogging=enableExplicitLogging)
 
-        # Notification infrastructure
-        self.notification_dispatcher = NotificationDispatcher()
-        self.notification_listener = NotificationListener(self.notification_dispatcher)
+        self.mcp_clients = MCPClientManager()
+        self._response_lock = asyncio.Lock()
+        self._conversation_lock = asyncio.Lock()
 
         # Load custom prompt from file if provided
         if self.custom_prompt_file:
@@ -285,41 +126,42 @@ class Yarp_mcpClient_BaseCore:
         self.fancyLog.INFO(f"Calling MCP tool '{tool_name}' on server {server_url} with args: {args}")
         self.fancyLog.INFO("")
         try:
-            async with streamablehttp_client(server_url) as (read_stream, write_stream, get_session_id):
-                async with ClientSession(read_stream, write_stream) as session:
-                    # Initialize the session
-                    await session.initialize()
+            client = self.mcp_clients.get(server_url)
+            tool_result = await client.call_tool(tool_name, args)
 
-                    # Call the tool
-                    tool_result = await session.call_tool(tool_name, args)
+            if tool_result.is_error:
+                return {
+                    "success": False,
+                    "error": str(tool_result.content) if tool_result.content else "Tool call failed"
+                }
 
-                    # Convert the result to a dict format
-                    if hasattr(tool_result, 'isError') and tool_result.isError:
-                        return {
-                            "success": False,
-                            "error": str(tool_result.content) if hasattr(tool_result, 'content') else "Tool call failed"
-                        }
-                    else:
-                        # Extract content from the tool result
-                        content = {}
-                        if hasattr(tool_result, 'content'):
-                            for item in tool_result.content:
-                                if hasattr(item, 'type') and item.type == "text":
-                                    content["text"] = item.text
-                                elif hasattr(item, 'type') and item.type == "json":
-                                    if isinstance(item.json, dict):
-                                        content.update(item.json)
-                                    else:
-                                        content["json"] = item.json
+            content = {}
+            if tool_result.content:
+                for item in tool_result.content:
+                    if getattr(item, "type", None) == "text":
+                        try:
+                            parsed_text = json.loads(item.text)
+                        except (TypeError, json.JSONDecodeError):
+                            content["text"] = item.text
+                        else:
+                            if isinstance(parsed_text, dict):
+                                content.update(parsed_text)
+                            else:
+                                content["text"] = item.text
 
-                        # Also include structured content if available
-                        if hasattr(tool_result, 'structuredContent') and tool_result.structuredContent:
-                            content.update(tool_result.structuredContent)
+            if tool_result.structured_content:
+                if isinstance(tool_result.structured_content, dict):
+                    structured = tool_result.structured_content
+                    # SDK v2 wraps generic and union return annotations in a
+                    # top-level `result` field. Flatten object results so tool
+                    # routing sees the server's actual contract fields.
+                    if set(structured) == {"result"} and isinstance(structured["result"], dict):
+                        structured = structured["result"]
+                    content.update(structured)
+                else:
+                    content["structured_content"] = tool_result.structured_content
 
-                        return {
-                            "success": True,
-                            **content
-                        }
+            return {"success": True, **content}
 
         except Exception as e:
             return {
@@ -369,9 +211,9 @@ class Yarp_mcpClient_BaseCore:
                                 self.tool_to_server[tool_name] = server_name
                         self.fancyLog.INFO(f"Discovered MCP server '{server_name}' at {server_info.get('url', 'unknown')} with {len(descriptions)} tools")
 
-                        # Add server to notification listener so we can receive notifications
+                        # Register the URL for a persistent SDK v2 client.
                         if server_info.get("url"):
-                            await self.notification_listener.add_server(server_info["url"], server_name)
+                            self.mcp_clients.add_server(server_info["url"], server_name)
                 except Exception as e:
                     self.fancyLog.DEBUG(f"Could not query {port_name}: {e}")
 
@@ -486,30 +328,19 @@ class Yarp_mcpClient_BaseCore:
             print(f"{Colors.OKBLUE}Querying MCP server '{server_info.get('name', 'unknown')}' for tools...{Colors.ENDC}")
             if server_info.get("url"):
                 try:
-                    async with streamablehttp_client(server_info["url"]) as (read_stream, write_stream, get_session_id):
-                        async with ClientSession(read_stream, write_stream) as session:
-                            await session.initialize()
+                    async with Client(server_info["url"], read_timeout_seconds=30.0) as client:
+                        tools_response = await client.list_tools()
 
-                            # Get list of tools from the MCP server
-                            tools_response = await session.list_tools()
+                        descriptions = {}
+                        for tool in tools_response.tools:
+                            descriptions[tool.name] = {
+                                "description": tool.description,
+                                "inputSchema": dict(tool.input_schema),
+                            }
 
-                            # Extract descriptions from tools
-                            descriptions = {}
-                            for tool in tools_response.tools:
-                                meta =getattr(tool, "meta", None) or {}
-                                # Store tool info including description and schema
-                                descriptions[tool.name] = {
-                                    "description": tool.description,
-                                    "inputSchema": tool.inputSchema.model_dump() if hasattr(tool.inputSchema, 'model_dump') else dict(tool.inputSchema),
-                                    "emits_notifications":  meta.get("x-yarp/emitsNotifications") if meta else False,
-                                    "kind": meta.get("x-yarp/notificationKind") if meta else None,
-                                    "method": meta.get("x-yarp/notificationMethod") if meta else None,
-                                    "requires_subscription": meta.get("x-yarp/requiresSubscription") if meta else None
-                                }
-
-                            server_info["descriptions"] = descriptions
-                            self.fancyLog.DEBUG(f"Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session")
-                            print(f"{Colors.OKGREEN}✅ Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session{Colors.ENDC}")
+                        server_info["descriptions"] = descriptions
+                        self.fancyLog.DEBUG(f"Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session")
+                        print(f"{Colors.OKGREEN}✅ Retrieved {len(descriptions)} tools from {server_info.get('name', 'unknown')} via MCP client session{Colors.ENDC}")
 
                 except Exception as e:
                     self.fancyLog.DEBUG(f"Error querying tools via MCP client session for {server_info.get('name', 'unknown')}: {e}")
@@ -822,71 +653,64 @@ Be conversational and helpful. Explain what you're doing with the YARP tools, bu
         pass
 
     async def run_loop(self):
-        """Main run loop - works with any input mode"""
-        # Initialize input mode
-        await self.input_mode.initialize()
+        """Run the client and unwind every owned lifecycle in reverse order."""
+        input_initialized = False
+        clients_started = False
+        subclass_setup_attempted = False
+        try:
+            await self.input_mode.initialize()
+            input_initialized = True
 
-        # Discover MCP servers and their tool descriptions
-        print(f"{Colors.OKBLUE}Discovering MCP servers...{Colors.ENDC}")
-        await self.discover_mcp_servers()
+            print(f"{Colors.OKBLUE}Discovering MCP servers...{Colors.ENDC}")
+            await self.discover_mcp_servers()
 
-        # Start notification listener after server discovery
-        print(f"{Colors.OKBLUE}Starting notification listener for real-time updates...{Colors.ENDC}")
-        await self.notification_listener.start()
+            print(f"{Colors.OKBLUE}Connecting MCP clients...{Colors.ENDC}")
+            await self.mcp_clients.start()
+            clients_started = True
 
-        # Build available tools from discovered descriptions
-        self.available_tools = self.get_available_tools()
+            self.available_tools = self.get_available_tools()
+            self.system_prompt = self._build_system_prompt()
+            self.fancyLog.INFO(f"System prompt built. Length: {len(self.system_prompt)} chars")
+            self.fancyLog.INFO(f"System prompt addenda count: {len(self.system_prompt_addenda)}")
+            self.fancyLog.DEBUG(f"System prompt: {self.system_prompt[:300]}...")
 
-        # Build system prompt dynamically from discovered tools
-        self.system_prompt = self._build_system_prompt()
-        self.fancyLog.INFO(f"System prompt built. Length: {len(self.system_prompt)} chars")
-        self.fancyLog.INFO(f"System prompt addenda count: {len(self.system_prompt_addenda)}")
-        self.fancyLog.DEBUG(f"System prompt: {self.system_prompt[:300]}...")
+            print(f"\n{Colors.OKBLUE}{'=' * 80}")
+            print("SYSTEM PROMPT FOR THIS SESSION:")
+            print(f"{'=' * 80}{Colors.ENDC}")
+            print(self.system_prompt)
+            print(f"{Colors.OKBLUE}{'=' * 80}{Colors.ENDC}\n")
 
-        # Print system prompt for debugging
-        print(f"\n{Colors.OKBLUE}{'='*80}")
-        print(f"SYSTEM PROMPT FOR THIS SESSION:")
-        print(f"{'='*80}{Colors.ENDC}")
-        print(self.system_prompt)
-        print(f"{Colors.OKBLUE}{'='*80}{Colors.ENDC}\n")
+            subclass_setup_attempted = True
+            await self._run_loop_setup()
 
-        # Call subclass setup hook
-        await self._run_loop_setup()
+            while True:
+                try:
+                    user_input = await self.input_mode.get_input()
+                    if user_input is None:
+                        break
+                    if not user_input:
+                        continue
 
-        while True:
-            try:
-                # Get input from the input mode
-                user_input = await self.input_mode.get_input()
-
-                # None means shutdown requested
-                if user_input is None:
+                    async with self._conversation_lock:
+                        response = await self.process_user_message(user_input)
+                    async with self._response_lock:
+                        await self.input_mode.send_response(response)
+                except KeyboardInterrupt:
+                    print(f"\n\n{Colors.OKCYAN}👋 Interrupted!{Colors.ENDC}")
                     break
-
-                # Empty string means no input yet (continue waiting)
-                if not user_input:
-                    continue
-
-                # Process the message and get response
-                response = await self.process_user_message(user_input)
-
-                # Send response through the input mode
-                await self.input_mode.send_response(response)
-
-            except KeyboardInterrupt:
-                print(f"\n\n{Colors.OKCYAN}👋 Interrupted!{Colors.ENDC}")
-                break
-            except Exception as e:
-                print(f"\n{Colors.FAIL}❌ Unexpected error: {e}{Colors.ENDC}")
-                import traceback
-                traceback.print_exc()
-                continue
-
-        # Call subclass cleanup hook
-        await self._run_loop_cleanup()
-
-        # Stop notification listener
-        print(f"{Colors.OKBLUE}Stopping notification listener...{Colors.ENDC}")
-        await self.notification_listener.stop()
-
-        # Cleanup input mode
-        await self.input_mode.cleanup()
+                except Exception as e:
+                    print(f"\n{Colors.FAIL}❌ Unexpected error: {e}{Colors.ENDC}")
+                    import traceback
+                    traceback.print_exc()
+        finally:
+            try:
+                if subclass_setup_attempted:
+                    await self._run_loop_cleanup()
+            finally:
+                try:
+                    if clients_started:
+                        print(f"{Colors.OKBLUE}Closing MCP clients...{Colors.ENDC}")
+                        await self.mcp_clients.stop()
+                finally:
+                    if input_initialized:
+                        await self.input_mode.cleanup()
