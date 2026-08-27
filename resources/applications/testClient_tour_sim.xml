@@ -1,0 +1,45 @@
+<application>
+    <name>Test_MCP_CLIENT_tour_sim</name>
+    <dependencies>
+    </dependencies>
+
+    <!-- Applications -->
+    <application>
+        <name>Navigation_ROS2_R1Mk3_SIM_light</name>
+        <prefix></prefix>
+    </application>
+
+    <application>
+        <name>Speech_Pipeline_MCP_sim_test</name>
+        <prefix></prefix>
+    </application>
+
+
+    <!-- Modules -->
+    <module>
+        <name>yarprobotinterface</name>
+        <parameters>--from mcpFakeBattery.ini</parameters>
+        <node>console</node>
+    </module>
+
+    <module>
+        <name>yarp_server_launcher.py</name>
+        <parameters>--context test_servers --from test_lobbyAmbassador_tour.ini</parameters>
+        <node>console-mcp</node>
+    </module>
+
+    <module>
+        <name>Yarp_mcpClient_GeneralPurpose.py</name>
+        <parameters>--core checker --mode yarp --yarp-port /testClient/text:i --custom-prompt-from tour_madama_client_prompt.txt --custom-prompt-context client_prompts</parameters>
+        <node>console-mcp</node>
+    </module>
+
+    <!-- Connections -->
+
+    <connection>
+        <from>/speechTranscription_nws/text:o</from>
+        <to>/testClient/text:i</to>
+        <protocol>fast_tcp</protocol>
+    </connection>
+
+</application>
