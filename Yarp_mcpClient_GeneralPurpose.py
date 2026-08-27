@@ -67,6 +67,13 @@ from src.llm_backends.llm_backend_ollama import OllamaBackend
 from src.core.Yarp_mcpClient_GeneralCore import Yarp_mcpClient_GeneralCore
 from src.core.Yarp_mcpClient_GeneralCheckerCore import Yarp_mcpClient_GeneralCheckerCore
 
+# Try to import YARP
+try:
+    import yarp
+except ImportError:
+    print("ERROR: YARP Python bindings not found. Please install YARP with Python support.")
+    sys.exit(1)
+
 # Color codes for terminal output
 class Colors:
     HEADER = '\033[95m'
@@ -80,134 +87,108 @@ class Colors:
     UNDERLINE = '\033[4m'
 
 
-def parse_arguments():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(
-        description="YARP MCP Swiss Army Client with multiple input modes and LLM backends",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Interactive chat with Azure OpenAI
-  python mcp_yarpSwissArmyClient.py --mode chat --model remote
-
-  # YARP port input with local Ollama
-  python mcp_yarpSwissArmyClient.py --mode yarp --model local --ollama-model llama3.2
-
-  # ROS2 service with Azure OpenAI
-  python mcp_yarpSwissArmyClient.py --mode ros2 --model remote
-
-  # Chat with background monitoring capabilities
-  python mcp_yarpSwissArmyClient.py --mode chat --model remote --core checker
-
-  # YARP input with monitoring
-  python mcp_yarpSwissArmyClient.py --mode yarp --model local --core checker
-        """
-    )
-
-    parser.add_argument(
-        "--mode",
-        choices=["chat", "yarp", "ros2"],
-        default="chat",
-        help="Input mode: chat (interactive terminal), yarp (YARP port), or ros2 (ROS2 service)"
-    )
-
-    parser.add_argument(
-        "--model",
-        choices=["local", "remote"],
-        default="remote",
-        help="LLM backend: remote (Azure OpenAI) or local (Ollama)"
-    )
-
-    parser.add_argument(
-        "--core",
-        choices=["standard", "checker"],
-        default="checker",
-        help="Client core type: checker (operation tracking) or standard (basic MCP client)"
-    )
-
-    parser.add_argument(
-        "--yarp-port",
-        default="/mcp_client/input:i",
-        help="YARP port name for yarp mode (default: /mcp_client/input:i)"
-    )
-
-    parser.add_argument(
-        "--ros2-service",
-        default="/mcp_client/query",
-        help="ROS2 service name for ros2 mode (default: /mcp_client/query)"
-    )
-
-    parser.add_argument(
-        "--ollama-url",
-        default="http://localhost:11434/v1",
-        help="Ollama API URL (default: http://localhost:11434/v1)"
-    )
-
-    parser.add_argument(
-        "--ollama-model",
-        default="llama3.2",
-        help="Ollama model name (default: llama3.2)"
-    )
-
-    parser.add_argument(
-        "--custom-prompt-file",
-        default=None,
-        help="Path to a text file containing a custom system prompt to replace the default R1 robot prompt"
-    )
-
-    return parser.parse_args()
-
-
 async def main():
-    args = parse_arguments()
+    config = yarp.ResourceFinder()
+    config.setDefault("mode", "chat")
+    config.setDefault("model", "remote")
+    config.setDefault("core", "checker")
+    config.configure(sys.argv)
+
+    if config.check("help"):
+        print("Usage: python mcp_yarpSwissArmyClient.py [options]")
+        print("Options:")
+        print("  --mode {chat,yarp,ros2}          Input mode (default: chat)")
+        print("  --model {local,remote}           LLM backend (default: remote)")
+        print("  --core {standard,checker}        Client core type (default: checker)")
+        print("  --yarp-port PORT                 YARP port name for yarp mode (default: /mcp_client/input:i)")
+        print("  --ollama-url URL                 Ollama API URL (default: http://localhost:11434)")
+        print("  --ollama-model MODEL             Ollama model name (default: llama3.2)")
+        print("  --custom-prompt-from FILE        Name of a custom prompt file (optional)")
+        print("  --custom-prompt-context CONTEXT  Context for the custom prompt (optional)")
+        print("  --ros2-service SERVICE_NAME      ROS2 service name for ros2 mode (default: /mcp_client/request)")
+        print("  --help                           Show this help message")
+        return
 
     print(f"{Colors.HEADER}Starting YARP MCP Swiss Army Client{Colors.ENDC}")
-    print(f"  Mode: {args.mode}")
-    print(f"  Model: {args.model}")
-    print(f"  Core: {args.core}")
+    print(f"  {config.toString_c()}")
     print()
 
+    params = {}
+
     try:
-        if args.mode == "chat":
-            input_mode = ChatInputMode()
-        elif args.mode == "yarp":
-            input_mode = YarpInputMode(port_name=args.yarp_port)
-        elif args.mode == "ros2":
-            input_mode = ROS2InputMode(service_name=args.ros2_service)
+        if config.check("mode"):
+            mode = config.find("mode").asString()
+            if mode == "chat":
+                input_mode = ChatInputMode()
+            elif mode == "yarp":
+                if not config.check("yarp-port"):
+                    print(f"{Colors.FAIL}❌ YARP port name is required for yarp mode. Use --yarp-port option.{Colors.ENDC}")
+                    return
+                input_mode = YarpInputMode(port_name=config.find("yarp-port").asString())
+            elif mode == "ros2":
+                if not config.check("ros2-service"):
+                    print(f"{Colors.FAIL}❌ ROS2 service name is required for ros2 mode. Use --ros2-service option.{Colors.ENDC}")
+                    return
+                input_mode = ROS2InputMode(service_name=config.find("ros2-service").asString())
         else:
-            print(f"{Colors.FAIL}Unknown mode: {args.mode}{Colors.ENDC}")
+            print(f"{Colors.FAIL}No input mode specified. Use --mode option.{Colors.ENDC}")
             return
     except Exception as e:
         print(f"{Colors.FAIL}❌ Failed to create input mode: {e}{Colors.ENDC}")
         import traceback
         traceback.print_exc()
         return
+    params["input_mode"] = input_mode
 
     try:
-        if args.model == "remote":
-            llm_backend = AzureOpenAIBackend()
-        elif args.model == "local":
-            llm_backend = OllamaBackend(
-                base_url=args.ollama_url,
-                model=args.ollama_model
-            )
-        else:
-            print(f"{Colors.FAIL}Unknown model: {args.model}{Colors.ENDC}")
-            return
-        await llm_backend.initialize()
+        if config.check("model"):
+            model = config.find("model").asString()
+            if model == "remote":
+                llm_backend = AzureOpenAIBackend()
+            elif model == "local":
+                if not config.check("ollama-url") or not config.check("ollama-model"):
+                    print(f"{Colors.FAIL}❌ Ollama URL and model are required for local mode. Use --ollama-url and --ollama-model options.{Colors.ENDC}")
+                    return
+                llm_backend = OllamaBackend(
+                    base_url=config.find("ollama-url").asString(),
+                    model=config.find("ollama-model").asString()
+                )
+            else:
+                print(f"{Colors.FAIL}Unknown model: {model}{Colors.ENDC}")
+                return
+            await llm_backend.initialize()
     except Exception as e:
         print(f"{Colors.FAIL}❌ Failed to initialize LLM backend: {e}{Colors.ENDC}")
         import traceback
         traceback.print_exc()
         return
 
+    params["llm_backend"] = llm_backend
+
+    if config.check("custom-prompt-from"):
+        findPrompt = yarp.ResourceFinder()
+        if config.check("custom-prompt-context"):
+            findPrompt.setDefaultContext(config.find("custom-prompt-context").asString())
+        custom_prompt_file = findPrompt.findFileByName(config.find("custom-prompt-from").asString())
+        if not os.path.isfile(custom_prompt_file):
+            print(f"{Colors.FAIL}❌ Custom prompt file not found: {custom_prompt_file}{Colors.ENDC}")
+            return
+        params["custom_prompt_file"] = custom_prompt_file
+        print(f"{Colors.OKGREEN}Using custom prompt from file: {custom_prompt_file}{Colors.ENDC}")
+
+
     # Select the appropriate client core based on user choice
-    if args.core == "checker":
-        client = Yarp_mcpClient_GeneralCheckerCore(input_mode=input_mode, llm_backend=llm_backend)
-        print(f"{Colors.OKBLUE}Using CheckerCore with operation tracking{Colors.ENDC}\n")
-    else:
-        client = Yarp_mcpClient_GeneralCore(input_mode=input_mode, llm_backend=llm_backend, custom_prompt_file=args.custom_prompt_file)
-        print(f"{Colors.OKBLUE}Using Standard Core{Colors.ENDC}\n")
+    if config.check("core"):
+        core = config.find("core").asString()
+        if core == "checker":
+            client = Yarp_mcpClient_GeneralCheckerCore(**params)
+            print(f"{Colors.OKBLUE}Using CheckerCore with operation tracking{Colors.ENDC}\n")
+        elif core == "standard":
+            client = Yarp_mcpClient_GeneralCore(**params)
+            print(f"{Colors.OKBLUE}Using Standard Core{Colors.ENDC}\n")
+        else:
+            print(f"{Colors.FAIL}Unknown core type: {core}{Colors.ENDC}")
+            return
 
     await client.run_loop()
 
