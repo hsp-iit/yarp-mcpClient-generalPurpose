@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 class Yarp_mcpClient_GeneralCheckerCore(Yarp_mcpClient_BaseCore):
     """YARP MCP client that tracks long-running server operations."""
 
-    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend,
+    def __init__(self, input_mode: InputMode, llm_backend: LLMBackend, custom_prompt_file: str = None,
                  enableExplicitLogging: bool = True):
         super().__init__(
-            input_mode, llm_backend, custom_prompt_file=None, logger=logger,
+            input_mode, llm_backend, custom_prompt_file=custom_prompt_file, logger=logger,
             enableExplicitLogging=enableExplicitLogging,
         )
         self.task_manager = BackgroundTaskManager()
