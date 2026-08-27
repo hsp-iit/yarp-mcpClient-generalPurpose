@@ -2,6 +2,10 @@
 
 A conversational AI client that **automatically discovers and uses YARP MCP servers** through natural language.
 
+For a quick code tour, see [REPOSITORY_MAP.md](REPOSITORY_MAP.md). The component
+boundaries are in [ARCHITECTURE.md](ARCHITECTURE.md), and the long-running work
+contract is in [ASYNC_OPERATIONS.md](ASYNC_OPERATIONS.md).
+
 ## ⚠️ Disclaimer
 
 This codebase has been written with the contribution of generative AI. While the code has been tested, please use it carefully and review it for your specific use case before deploying in production environments.
@@ -91,6 +95,7 @@ python Yarp_mcpClient_GeneralPurpose.py --mode ros2 --model remote
 |--------|--------|---------|-------|
 | `--mode` | chat, yarp, ros2 | chat | Input mode |
 | `--model` | local, remote | remote | LLM backend |
+| `--core` | checker, standard | checker | Operation-aware or basic client core |
 | `--yarp-port` | port name | /mcp_client/input:i | YARP input port (yarp mode only) |
 | `--ollama-url` | URL | http://localhost:11434 | Ollama API (local mode only) |
 | `--ollama-model` | model name | llama2 | Ollama model (local mode only) |
@@ -102,7 +107,7 @@ User Input (chat/YARP/ROS2)
          ↓
 Yarp_mcpClient_GeneralPurpose.py
          ↓
-Yarp_mcpClient_GeneralCore.py (discover, manage sessions, call tools)
+GeneralCheckerCore + BaseCore (discover, call tools, track operations)
          ↓
 YARP Network (discovers MCP servers via /mcp_server/*/info:o ports)
          ↓
@@ -116,6 +121,7 @@ MCP Servers (speech, battery, etc.) ←→ YARP Devices
 ✅ **Dynamic tools** - Adapts to any MCP server (via `list_tools()`)
 ✅ **Multiple modes** - Terminal, YARP port, ROS2 service
 ✅ **Multiple backends** - Azure OpenAI or local Ollama
+✅ **Durable operation tracking** - Resource subscriptions with polling fallback
 
 ## Prerequisites
 
@@ -193,7 +199,8 @@ python Yarp_mcpClient_GeneralPurpose.py --mode chat --model local --ollama-model
 
 ### File Structure
 - **Yarp_mcpClient_GeneralPurpose.py** - Entry point, argument parsing
-- **Yarp_mcpClient_GeneralCore.py** - Core logic (server discovery, session management, tool routing)
+- **`src/core/Yarp_mcpClient_BaseCore.py`** - Discovery, managed SDK clients, and tool routing
+- **`src/core/Yarp_mcpClient_GeneralCheckerCore.py`** - Operation tracking and completion delivery
 - **input_mode_*.py** - Input modes (chat, yarp, ros2)
 - **llm_backend_*.py** - LLM backends (azure, ollama)
 
@@ -201,9 +208,9 @@ python Yarp_mcpClient_GeneralPurpose.py --mode chat --model local --ollama-model
 
 1. **YARP Port Discovery**: Parses `yarp name list` to find `/mcp_server/*/info:o` ports
 2. **RPC Queries**: Gets server name, URL, system prompt addenda via YARP RPC
-3. **Session Creation**: Creates persistent MCP session to server URL
-4. **Tool Discovery**: Calls `session.list_tools()` to get available tools
-5. **Session Reuse**: All subsequent tool calls use the persistent session
+3. **Client Creation**: Enters one persistent SDK `Client` per server URL
+4. **Tool Discovery**: Calls `client.list_tools()` to get available tools
+5. **Client Reuse**: Tool calls and operation-resource watchers share managed clients
 
 ## Troubleshooting
 

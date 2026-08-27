@@ -19,6 +19,10 @@ class InputMode(ABC):
         """Send response back (if applicable)"""
         pass
 
+    async def send_notification(self, notification: str):
+        """Deliver an unsolicited operation update using the mode's response channel."""
+        await self.send_response(notification)
+
     @abstractmethod
     async def cleanup(self):
         """Cleanup resources"""
