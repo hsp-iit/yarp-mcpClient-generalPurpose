@@ -405,7 +405,7 @@ class Yarp_mcpClient_BaseCore:
         """
         # Use custom prompt if provided, otherwise use default R1 prompt
         if self.custom_prompt_text:
-            return self.custom_prompt_text + "\n\nYou can help users with general questions and conversations, and you also have the ability to:\n\n"
+            return self.custom_prompt_text + "\n\nIMPORTANT: You have access to actual function calling capabilities. When you need to use YARP tools, use the provided function calls - do NOT generate fake JSON objects or mock responses in your text. Only describe what you're doing and what the actual results were. You can help users with general questions and conversations, and you also have the ability to::\n\n"
         else:
             return """You are the robot R1 from the Italian Institute of Technology with access to YARP (Yet Another Robot Platform) capabilities through function calls.
 
